@@ -1,29 +1,31 @@
-# Devin SCA Reachability Bot
+# Devin SCA Reachability
 
-Continuous Software Composition Analysis (SCA) bot with reachability filtering for OkamiOps.
+Continuous Software Composition Analysis (SCA) bot that combines SBOM generation, OSV vulnerability data, and reachability analysis to eliminate false positive dependency alerts.
 
-This bot owns the outcome of **reducing noise in dependency vulnerability alerts** by combining SBOM generation, OSV matching, and call-graph reachability analysis. Only vulnerabilities that are actually reachable in application code generate pull requests or high-priority alerts.
+Built with Devin Bot for always-on supply chain posture.
 
 ## What it does
 
-- Generates CycloneDX SBOMs on every relevant push / schedule (`syft` or equivalent).
-- Cross-references the SBOM against [OSV.dev](https://osv.dev) (`/v1/querybatch`).
-- Runs reachability analysis (call graphs + import analysis) to determine whether the vulnerable code is actually used.
-- Opens PRs or alerts **only** for reachable findings.
-- Produces weekly posture reports of filtered (unreachable) findings.
+- Generates CycloneDX SBOMs on every relevant change (using tools like Syft or cdxgen)
+- Cross-references dependencies against the OSV.dev database (`/v1/querybatch`)
+- Performs reachability analysis via call graphs and import/usage detection to determine if vulnerable code is actually exercised
+- Only raises alerts or opens PRs for vulnerabilities that are both present **and** reachable
+- Produces weekly reports of "not in use" findings to reduce noise
+
+## Why reachability matters
+
+Most SCA tools (including basic Dependabot-style scanners) flag every vulnerable dependency version regardless of whether the vulnerable function or code path is ever called. This bot filters those out using static analysis (call graphs, AST-based import tracking, and rules via Semgrep/CodeQL where appropriate).
 
 ## Status
 
-Early stage. The bot is being built with a Devin Bot and will live in this repository.
+Public starting point. The Devin Bot will own continuous improvement, integration into OkamiOps repositories, and expansion of reachability coverage across stacks.
 
-Public by design — part of the OkamiOps AppSec tooling.
+## Links
 
-## Related
-
-- [OkamiOps](https://okamiops.com)
-- [Okami Sentinel](https://sentinel.okamiops.com)
-- [secops-baseline](https://github.com/OkamiOps/secops-baseline)
+- OkamiOps: https://okamiops.com
+- Organization: https://github.com/OkamiOps
+- Related: [okami-sentinel](https://github.com/OkamiOps/okami-sentinel) | [secops-baseline](https://github.com/OkamiOps/secops-baseline)
 
 ---
 
-Built with Devin Bots. Not a tuned Dependabot.
+Part of the OkamiOps public AppSec tooling.
