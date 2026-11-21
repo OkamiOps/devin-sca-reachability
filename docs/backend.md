@@ -64,6 +64,7 @@ Use HTTPS com proxy confiável em live. Configure SCA_PUBLIC_ORIGIN com a origem
 
 ```sh
 export SCA_MODE=public
+# Opcional: presets para a sincronização; pode ser omitido ou vazio.
 export SCA_PUBLIC_REPOSITORIES='OWASP/NodeGoat'
 export SCA_DASHBOARD_TOKEN='<token-aleatorio-com-pelo-menos-32-caracteres>'
 export SCA_PUBLIC_ORIGIN='http://127.0.0.1:8010'
@@ -71,7 +72,7 @@ export SCA_DATABASE_PATH='./public.sqlite3'
 .venv/bin/sca-reachability-serve --port 8010
 ```
 
-Após login, sincronize instalações e dispare a análise da branch padrão (selecionada inicialmente). A instalação sintética 9003, “Repositórios públicos”, contém somente os nomes configurados. `SCA_PUBLIC_REPOSITORIES` aceita até dez entradas estritas `owner/name`; vazio deixa GitHub não configurado. IDs sintéticos de repositório são estáveis. O token segue a regra live; nenhuma credencial GitHub é necessária. IA permanece desabilitada neste modo. `/api/meta` informa `public` e configuração real; os scans usam source `github` por compatibilidade com SQLite. Webhooks e `/api/demo/push` retornam 404. A opção de origens loopback continua exclusiva de demo.
+Após login, cole uma URL pública no cartão, verifique o repositório, escolha a branch e inicie a análise. Para carregar presets, sincronize instalações. A instalação sintética 9003, “Repositórios públicos”, contém os presets sincronizados e os repositórios registrados por URL. `SCA_PUBLIC_REPOSITORIES` aceita até dez entradas estritas `owner/name`, mas é opcional: omitido ou vazio mantém GitHub público configurado e o registro por URL disponível. IDs sintéticos de repositório são estáveis. O token segue a regra live; nenhuma credencial GitHub é necessária. IA permanece desabilitada neste modo. `/api/meta` informa `public` e configuração real; os scans usam source `github` por compatibilidade com SQLite. Webhooks e `/api/demo/push` retornam 404. A opção de origens loopback continua exclusiva de demo.
 
 Não há chamadas a api.github.com: branches, HEAD simbólico e SHA vêm do anúncio smart HTTP de refs; o snapshot vem de codeload no SHA exato. Download máximo de 32 MiB comprimidos; tar descomprimido (inclusive headers) de até 64 MiB e 30.000 entradas. Tudo permanece em memória: nenhum arquivo monitorado é gravado, executado, instalado ou importado. Apenas um commit fica no cache; blobs recebem SHA Git real. Symlinks/hardlinks não são seguidos e viram entradas 120000, sinalizadas como lacuna pelo pipeline. Caminhos inseguros, arquivos especiais, limites excedidos e snapshots inválidos falham explicitamente, nunca geram resultado “seguro”. Redirects HTTPS são aceitos somente para github.com/codeload.github.com, no máximo três saltos. Rede pública pode falhar ou limitar tráfego; não há garantia de disponibilidade. Reachability e evidências seguem o mesmo worker estático; unknown nunca significa seguro e IA não altera classificação.
 
