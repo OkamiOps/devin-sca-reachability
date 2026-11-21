@@ -77,6 +77,15 @@ class ScanWorker:
                 (now,),
             ).fetchall()
             for job in expired:
+                exhausted = job['attempts'] >= MAX_ATTEMPTS
+                connection.execute(
+                    '''INSERT INTO scan_progress(scan_id, stage, completed, total, error_code, updated_at)
+                    VALUES (?, ?, NULL, NULL, ?, ?)
+                    ON CONFLICT(scan_id) DO UPDATE SET stage=excluded.stage,
+                    completed=NULL, total=NULL, error_code=excluded.error_code, updated_at=excluded.updated_at''',
+                    (job['scan_id'], 'failed' if exhausted else 'queued',
+                     'analysis_failed' if exhausted else None, iso_now()),
+                )
                 if job["attempts"] >= MAX_ATTEMPTS:
                     self._mark_failed(
                         connection,
