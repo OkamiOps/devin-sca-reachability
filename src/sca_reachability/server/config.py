@@ -32,8 +32,8 @@ class Settings:
             for name in self.public_repositories
         ):
             raise ValueError("SCA_PUBLIC_REPOSITORIES requires at most 10 owner/name entries")
-        if self.allow_loopback_origins and self.mode != "demo":
-            raise ValueError("SCA_ALLOW_LOOPBACK_ORIGINS requires SCA_MODE=demo")
+        if self.allow_loopback_origins and self.mode not in {"demo", "public"}:
+            raise ValueError("SCA_ALLOW_LOOPBACK_ORIGINS requires SCA_MODE=demo or public")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":

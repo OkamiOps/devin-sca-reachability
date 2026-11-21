@@ -58,8 +58,9 @@ class PublicTests(unittest.TestCase):
         for name in ['../repo', 'owner/../../evil', 'https://github.com/a/b', 'a/b?x', ','.join(f'a/r{i}' for i in range(11))]:
             with self.subTest(name=name), self.assertRaises(ValueError):
                 Settings.from_env({'SCA_MODE': 'public', 'SCA_PUBLIC_REPOSITORIES': name})
-        with self.assertRaises(ValueError):
-            Settings.from_env({'SCA_MODE': 'public', 'SCA_ALLOW_LOOPBACK_ORIGINS': '1'})
+        self.assertTrue(Settings.from_env({
+            'SCA_MODE': 'public', 'SCA_ALLOW_LOOPBACK_ORIGINS': '1',
+        }).allow_loopback_origins)
 
     def test_refs(self):
         self.assertEqual(parse_refs(refs()), ({'main': 'a'*40}, 'main'))

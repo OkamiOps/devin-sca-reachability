@@ -241,7 +241,7 @@ def ensure_same_origin(
             status_code=403, detail="Origin validation failed", headers=headers
         )
     if (
-        settings.mode == "demo" and settings.allow_loopback_origins
+        settings.mode in {"demo", "public"} and settings.allow_loopback_origins
         and _is_loopback_origin(origin)
     ):
         return
