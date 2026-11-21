@@ -21,6 +21,16 @@ test("AI provenance follows structured service metadata, not wording", () => {
   assert.match(explanationPresentation({ status: "disabled", source: "ai", text: "Old text" }).text, /não está habilitada/);
   assert.equal(explanationPresentation({ status: "available", text: "No provenance" }).ai, false);
 });
+test("deterministic fallback is visible when AI is disabled or the provider is unavailable", () => {
+  for (const status of ["disabled", "unavailable"]) {
+    const result = explanationPresentation({ status, source: "deterministic", text: "Resumo local dos achados." });
+    assert.equal(result.text, "Resumo local dos achados.");
+    assert.equal(result.title, "Resumo determinístico · sem IA");
+    assert.equal(result.ai, false);
+    assert.ok(result.note);
+  }
+  assert.match(explanationPresentation({ status: "unavailable", source: "ai", text: "Stale output" }).text, /Não foi possível/);
+});
 test("branch edits preserve off-screen selections and detect a pause-all change", () => {
   const branches = [{ name: "main", selected: true }, { name: "release/v1", selected: true }, { name: "feature", selected: false }];
   assert.equal(isDirty(branches, new Set(["release/v1", "main"])), false);

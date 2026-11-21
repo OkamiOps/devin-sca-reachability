@@ -35,12 +35,19 @@ export function scopedRepositoryPath(installation, repository) {
 }
 
 export function explanationPresentation(explanation) {
+  if (explanation?.source === "deterministic" && explanation.text) {
+    return {
+      title: "Resumo determinístico · sem IA", text: explanation.text, ai: false,
+      note: explanation.status === "unavailable"
+        ? "A IA não respondeu. Este resumo local continua disponível e não foi gerado por IA."
+        : explanation.status === "disabled" ? "A explicação por IA está desabilitada neste ambiente." : null,
+    };
+  }
   if (explanation?.status !== "available" || !explanation.text) {
     return { title: "Explicação indisponível", text: explanation?.status === "disabled"
       ? "A explicação por IA não está habilitada neste ambiente. Os achados acima continuam disponíveis."
       : "Não foi possível obter uma explicação. Isso não altera os resultados da análise.", ai: false };
   }
   if (explanation.source === "ai") return { title: "Explicação gerada por IA", text: explanation.text, ai: true };
-  if (explanation.source === "deterministic") return { title: "Resumo determinístico · sem IA", text: explanation.text, ai: false };
   return { title: "Explicação · origem não informada", text: explanation.text, ai: false };
 }
