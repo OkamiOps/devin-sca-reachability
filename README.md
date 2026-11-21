@@ -1,6 +1,21 @@
 # Devin SCA Reachability
 
-An initial, offline scaffold for a future Software Composition Analysis (SCA) and dependency reachability bot. The current implementation reads local CycloneDX and OSV querybatch JSON; it does not connect to services or claim to establish whether vulnerable code is reachable.
+A defensive SCA pilot with an unchanged offline CLI and an optional GitHub branch-monitoring server. Reachability remains **unknown**: dependency presence and AI explanations do not prove vulnerable code executes.
+
+## Optional branch-monitoring server
+
+Requires Python 3.11+. Start the completely offline demonstration:
+
+~~~sh
+python -m pip install '.[server]'
+SCA_MODE=demo SCA_DATABASE_PATH=./demo.sqlite3 sca-reachability-serve
+~~~
+
+Open http://127.0.0.1:8000 and sign in with `local-demo` (accepted **only** in explicit demo mode). The fictional installation/repository offers main, develop, and release. Main starts selected with one completed synthetic scan. Select release and simulate a push to compare fictional package 1.0.0 (DEMO-0001) with 1.1.0 (no matching synthetic advisory). Demo uses the same inventory/queue/correlation pipeline with local adapters and never calls GitHub, OSV, or AI.
+
+Live is the default mode and denies installation access until configured. It supports read-only GitHub dependency metadata, branch selections, signed/idempotent webhooks, a durable SQLite worker, exact-version OSV correlation, scoped history, and optional sanitized AI explanations. It never clones or executes repository code or provisions a GitHub App.
+
+See [backend setup and security boundaries](docs/backend.md), [dashboard behavior](docs/dashboard.md), and [optional AI explanations](docs/ai-explanations.md). This is a single-operator pilot, not multi-tenant SaaS authentication.
 
 ## Current offline demo
 
@@ -13,7 +28,7 @@ An empty result means **no findings in the supplied data**, not that the project
 
 ## Setup and commands
 
-Requires Python 3.11 or newer. There are no runtime third-party dependencies.
+Requires Python 3.11 or newer. The offline CLI has no runtime third-party dependencies. Server tests require the server extra and are skipped when it is absent.
 
 ~~~sh
 python -m pip install .
@@ -47,7 +62,7 @@ Malformed JSON, unsupported SBOM formats, missing component purl/version, unsupp
 
 ## Not implemented yet
 
-The README's longer-term direction remains to generate CycloneDX SBOMs (for example with Syft or cdxgen), query OSV.dev's /v1/querybatch, perform static reachability analysis (potentially with call graphs, Semgrep or CodeQL), and provide reports. This scaffold does **not** generate SBOMs, make network requests, implement a static analyzer, suppress findings as “not in use,” open alerts/PRs, or schedule weekly reports. Its default analyzer returns unknown until a defensible analyzer is supplied.
+The longer-term direction remains CycloneDX SBOM generation (for example with Syft or cdxgen) and defensible static reachability analysis. The offline CLI does not make network requests; the optional live server reads GitHub dependency metadata and queries OSV. Neither surface generates SBOMs, implements a static analyzer, suppresses findings as “not in use,” opens alerts/PRs, or schedules weekly reports. Reachability stays unknown.
 
 ## Links
 
