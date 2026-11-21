@@ -152,7 +152,7 @@ class ScanWorker:
             )
             self._progress(job_data, 'completed', len(inventory.components), len(inventory.components))
         except RetryableError:
-            self._progress(job_data, 'failed' if job_data['attempts'] >= MAX_ATTEMPTS else 'queued', code='network')
+            self._progress(job_data, 'failed' if job_data['attempts'] >= MAX_ATTEMPTS else 'queued', code='network' if job_data['attempts'] >= MAX_ATTEMPTS else None)
             self._retry_or_fail(job_data)
         except ScanError as error:
             self._progress(job_data, 'failed', code=getattr(error, 'code', 'analysis_failed'))

@@ -12,7 +12,7 @@ if SERVER_AVAILABLE:
     from fastapi.testclient import TestClient
     from sca_reachability.server.app import create_app
     from sca_reachability.server.config import Settings
-    from sca_reachability.server.errors import PublicError
+    from sca_reachability.server.errors import PublicError, RetryableError
     from sca_reachability.server.osv_client import OsvClient
     from sca_reachability.server.public_github import PublicGitHubAdapter, normalize_repository, parse_tarball
 
@@ -46,6 +46,7 @@ class PublicByURLTests(unittest.TestCase):
             with self.assertRaises(PublicError) as error:
                 PublicGitHubAdapter((), client)._refs('a/b')
             self.assertEqual(error.exception.code, 'network')
+            self.assertIsInstance(error.exception, RetryableError)
             self.assertNotIn('diagnostics', str(error.exception))
         class Chunks(httpx.SyncByteStream):
             def __iter__(self):
@@ -60,6 +61,22 @@ class PublicByURLTests(unittest.TestCase):
         with self.assertRaises(PublicError) as error:
             parse_tarball(archive({'root/a': b'a', 'root/b': b'b'}), max_entries=1)
         self.assertEqual(error.exception.code, 'too_large')
+
+    def test_transient_snapshot_errors_retry_before_network_failure(self):
+        headers = {'Authorization': 'Bearer '+'t'*32}
+        for status in (429, 503):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
+                repo = client.post('/api/public/repositories', json={'url': 'a/b'}, headers=headers).json()['repository']
+                scan_id = client.post(f"/api/public/repositories/{repo['id']}/scan", json={'branch': 'main'}, headers=headers).json()['scan_id']
+                adapter = client.app.state.worker.github
+                with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(status))) as transport, patch.object(adapter, '_client', transport):
+                    for attempt in range(3):
+                        self.assertTrue(client.app.state.worker.run_once())
+                        report = client.get('/api/scans/'+scan_id, headers=headers).json()
+                        self.assertEqual(report['status'], 'failed' if attempt == 2 else 'queued')
+                        self.assertEqual(report['error_code'], 'network' if attempt == 2 else None)
+                        with client.app.state.database.transaction() as connection:
+                            connection.execute('UPDATE jobs SET available_at = 0')
 
     def app(self, directory, files=None, refs_status=200):
         snapshot = archive(files if files is not None else {
