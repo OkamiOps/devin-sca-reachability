@@ -44,7 +44,7 @@ function harness(responder) {
     },
   };
   vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped, overview, activity, branches, scanTable, branchRows, simulationControls, renderLogin, openDetail, focusMain, matchingScans, resultsList, refresh, selectFiltered, findingMarkup, advisoryLink, manifestLink, findingInstructions, copyInstructions, selectionSummary, renderView };`, sandbox);
-  return { ...sandbox.testApp, nodes, calls, events, windowEvents, timers, clipboard, document: sandbox.document,
+  return { ...sandbox.testApp, nodes, calls, events, windowEvents, timers, clipboard, document: sandbox.document, window: sandbox.window,
     async tick(delay) {
       const entry = [...timers].find(([, timer]) => timer.delay === delay);
       assert.ok(entry, `No timer with delay ${delay}`);
@@ -387,6 +387,54 @@ test("closing a report cancels polling and restores focus without scrolling navi
   app.nodes.get("#detail-dialog").close();
   assert.equal(app.timers.size, 0);
   assert.equal(app.nodes.get("#main").focusOptions.preventScroll, true);
+});
+
+test("report close restores the source button and both scroll positions after a background rerender", async () => {
+  const app = harness(() => ({ body: { status: "queued" } }));
+  app.state.authenticated = true;
+  app.state.view = "branches";
+  app.document.activeElement = { id: "scan-trigger", dataset: { action: "scan", branch: "main" } };
+  app.nodes.set("#main", { contains() { return true; }, focus() {} });
+  app.nodes.set("#branch-list", { scrollTop: 180 });
+  Object.assign(app.window, { scrollX: 7, scrollY: 772 });
+  let scrolled;
+  app.window.scrollTo = options => { scrolled = options; };
+  await app.openDetail("scan");
+  const replacement = { focus(options) { this.focusOptions = options; } };
+  app.nodes.set("#scan-trigger", replacement);
+  app.nodes.get("#branch-list").scrollTop = 0;
+  app.nodes.get("#detail-dialog").close();
+  assert.equal(replacement.focusOptions.preventScroll, true);
+  assert.equal(scrolled.top, 772);
+  assert.equal(scrolled.left, 7);
+  assert.equal(app.nodes.get("#branch-list").scrollTop, 180);
+  assert.equal(app.state.detailReturn, null);
+  assert.equal(app.timers.size, 0);
+});
+
+test("manual scan remembers its trigger before the busy render removes focus", async () => {
+  let app;
+  app = harness((path, options) => {
+    if (path.endsWith("/scan") && options.method === "POST") {
+      app.document.activeElement = null;
+      return { body: { scan_id: "new-scan" } };
+    }
+    return { body: path.startsWith("/api/scans?") ? { items: [] } : { status: "completed" } };
+  });
+  Object.assign(app.state, { authenticated: true, view: "branches", installation: 1, repository: 2,
+    branches: [{ name: "main", selected: true }], selected: new Set(["main"]) });
+  const trigger = { id: "manual-trigger", dataset: { action: "scan", branch: "main" }, focus(options) { this.focusOptions = options; } };
+  app.document.activeElement = trigger;
+  app.nodes.set("#main", { contains() { return true; }, setAttribute() {} });
+  app.nodes.set("#manual-trigger", trigger);
+  app.window.scrollY = 772;
+  let scrolled;
+  app.window.scrollTo = options => { scrolled = options; };
+  await app.events.get("click")({ target: { closest() { return trigger; } } });
+  assert.equal(app.nodes.get("#detail-dialog").open, true);
+  app.nodes.get("#detail-dialog").close();
+  assert.equal(trigger.focusOptions.preventScroll, true);
+  assert.equal(scrolled.top, 772);
 });
 
 test("failed or unavailable reports never poll or present empty calculated results", async () => {

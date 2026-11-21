@@ -8,7 +8,7 @@ const state = {
   filter: "", statusFilter: "all", busy: false, operation: null, epoch: 0, detailEpoch: 0,
   lastUpdated: null, timer: null, noticeTimer: null, detailTimer: null,
   selectionError: "", saveError: "", branchRefreshError: "", connectionNotice: false,
-  simulationScope: null, simulationTarget: null,
+  simulationScope: null, simulationTarget: null, detailReturn: null,
 };
 const MAX_BRANCHES = 20;
 class ApiError extends Error {
@@ -106,6 +106,22 @@ function restoreFocus(saved) {
   }
   node.focus({ preventScroll: true });
   if (typeof saved.start === "number" && node.setSelectionRange) node.setSelectionRange(saved.start, saved.end);
+}
+function detailOrigin() {
+  return { focus: captureFocus(), view: state.view, installation: state.installation, repository: state.repository,
+    left: window.scrollX || 0, top: window.scrollY || 0, branches: $("#branch-list")?.scrollTop || 0 };
+}
+function restoreDetailOrigin() {
+  const origin = state.detailReturn;
+  state.detailReturn = null;
+  if (!state.authenticated || !origin || origin.view !== state.view ||
+      String(origin.installation) !== String(state.installation) || String(origin.repository) !== String(state.repository)) {
+    focusMain(); return;
+  }
+  restoreFocus(origin.focus);
+  if (!origin.focus) $("#main").focus({ preventScroll: true });
+  if ($("#branch-list")) $("#branch-list").scrollTop = origin.branches;
+  window.scrollTo({ left: origin.left, top: origin.top, behavior: "instant" });
 }
 function empty(title, text, action = "") {
   return `<div class="empty"><span class="empty-icon" aria-hidden="true">↗</span><h3>${e(title)}</h3><p>${e(text)}</p>${action}</div>`;
@@ -420,10 +436,11 @@ function demoSourceMarkup(scan) {
       '</code></p><pre class="demo-source-json"><code>' + e(source.content) + '</code></pre></section>').join("") +
     '</details>';
 }
-async function openDetail(id, polling = false) {
+async function openDetail(id, polling = false, origin = null) {
   clearTimeout(state.detailTimer);
   const epoch = ++state.detailEpoch;
   const dialog = $("#detail-dialog");
+  if (!dialog.open) state.detailReturn = origin || detailOrigin();
   if (!polling) $("#detail-content").innerHTML = `<div class="dialog-heading"><h2 id="detail-title">Carregando análise…</h2>${button("Fechar", "close-detail", "quiet")}</div><p class="secondary" role="status">Consultando o relatório e suas evidências.</p>`;
   if (!dialog.open) dialog.showModal();
   try {
@@ -491,11 +508,12 @@ async function saveBranches() {
 }
 async function queueScan(branch, simulate = false) {
   if (isDirty(state.branches, state.selected)) { notice("Salve ou descarte a seleção antes de iniciar uma análise.", true); return; }
+  const origin = detailOrigin();
   await mutation(async () => {
     const result = await api(simulate ? "/api/demo/push" : `${repositoryPath()}/scan`, { method: "POST", body: simulate ? { repository_id: Number(state.repository), branch } : { branch } });
     notice(simulate ? "Push sintético recebido. Acompanhe a análise de demonstração." : "Análise adicionada à fila. O resultado aparecerá quando a execução terminar.");
     const path = scansPath(); if (path) state.scans = items(await api(path));
-    if (result?.scan_id) await openDetail(result.scan_id);
+    if (result?.scan_id) await openDetail(result.scan_id, false, origin);
   }, "scan");
 }
 
@@ -633,7 +651,7 @@ function readView() {
 }
 window.addEventListener("hashchange", () => { state.view = readView(); state.filter = ""; clearNotice(); renderView(); focusMain(); });
 window.addEventListener("beforeunload", event => { if (state.authenticated && isDirty(state.branches, state.selected)) { event.preventDefault(); event.returnValue = ""; } });
-$("#detail-dialog").addEventListener("close", () => { clearTimeout(state.detailTimer); state.detailEpoch++; focusMain(); });
+$("#detail-dialog").addEventListener("close", () => { clearTimeout(state.detailTimer); state.detailEpoch++; restoreDetailOrigin(); });
 $("#logout").addEventListener("click", async () => {
   if (isDirty(state.branches, state.selected)) { notice("Salve ou descarte suas alterações antes de sair.", true); return; }
   try { await api("/api/session", { method: "DELETE" }); endSession(); clearNotice(); }
