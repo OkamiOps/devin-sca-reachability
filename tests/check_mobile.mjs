@@ -1,6 +1,9 @@
-// Local demo on :8000, Chromium CDP on :29229; no third-party packages.
+// Defaults to local demo; SCA_TEST_ORIGIN/TOKEN support real public reports.
 import assert from "node:assert/strict";
-const version = await (await fetch("http://localhost:29229/json/version")).json();
+import { writeFile } from "node:fs/promises";
+const origin = process.env.SCA_TEST_ORIGIN || "http://127.0.0.1:8000";
+const token = process.env.SCA_TEST_TOKEN || "local-demo";
+const version = await (await fetch((process.env.SCA_TEST_CDP || "http://localhost:29229") + "/json/version")).json();
 const socket = new WebSocket(version.webSocketDebuggerUrl);
 await new Promise(resolve => socket.addEventListener("open", resolve, { once: true }));
 let next = 0;
@@ -37,13 +40,32 @@ try {
     throw new Error("Browser condition timed out: " + expression);
   }
   await call("Page.enable");
-  await call("Page.navigate", { url: "http://127.0.0.1:8000" });
+  await call("Page.navigate", { url: origin });
   await until("!!document.querySelector('#access-token')");
-  assert.equal(await evaluate(`fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json','X-SCA-Request':'1'},body:JSON.stringify({token:'local-demo'})}).then(r=>r.status)`), 200);
+  assert.equal(await evaluate(`fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json','X-SCA-Request':'1'},body:JSON.stringify({token:${JSON.stringify(token)}})}).then(r=>r.status)`), 200);
   await call("Page.reload");
   await until("document.querySelector('#navigation')?.hidden === false");
   const scanId = await evaluate("fetch('/api/scans').then(r=>r.json()).then(r=>r.items.find(s=>s.status==='completed')?.id)");
-  assert.ok(scanId, "A completed synthetic scan is required");
+  assert.ok(scanId, "A completed scan is required");
+  async function screenshot(name) {
+    if (!process.env.SCA_SCREEN_DIR) return;
+    const { data } = await call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+    await writeFile(`${process.env.SCA_SCREEN_DIR}/${name}.png`, Buffer.from(data, "base64"));
+  }
+  async function openReport() {
+    await evaluate("location.hash='results'");
+    await until("!!document.querySelector('[data-action=detail]')");
+    await evaluate(`[...document.querySelectorAll('[data-action=detail]')].find(n=>n.dataset.id===${JSON.stringify(scanId)}).click()`);
+    await until("document.querySelector('#detail-dialog').open && !!document.querySelector('.finding')");
+  }
+  if (process.env.SCA_SCREEN_DIR) {
+    await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await screenshot("public-desktop-overview");
+    await openReport();
+    await evaluate("document.querySelector('.finding details').open=true;document.querySelector('.finding').scrollIntoView({block:'start'})");
+    await screenshot("public-desktop-report-evidence");
+    await evaluate("document.querySelector('#detail-dialog').close()");
+  }
   for (const [width, height] of [[320, 640], [390, 844], [412, 844]]) {
     await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: true });
     for (const view of ["overview", "branches", "results", "activity"]) {
@@ -65,11 +87,16 @@ try {
     await until("!!document.querySelector('[data-action=detail]')");
     await evaluate(`[...document.querySelectorAll('[data-action=detail]')].find(n=>n.dataset.id===${JSON.stringify(scanId)}).click()`);
     await until("document.querySelector('#detail-dialog').open && !!document.querySelector('#detail-title')");
+    if (width === 390 && process.env.SCA_SCREEN_DIR) {
+      await screenshot("public-mobile-report");
+      await evaluate("document.querySelector('.finding details').open=true;document.querySelector('.finding').scrollIntoView({block:'start'})");
+      await screenshot("public-mobile-finding");
+    }
     const result = await evaluate(`(() => {
       document.querySelectorAll('#detail-dialog details').forEach(n=>n.open=true);
       const dialog=document.querySelector('#detail-dialog');
       return {width:innerWidth,scrollWidth:document.documentElement.scrollWidth,dialogWidth:dialog.clientWidth,dialogScroll:dialog.scrollWidth,
-        targets:[...dialog.querySelectorAll('button,summary')].map(n=>{const r=n.getBoundingClientRect();return {label:n.textContent,width:r.width,height:r.height}})};
+        targets:[...dialog.querySelectorAll('button,summary,a')].filter(n=>n.getClientRects().length).map(n=>{const r=n.getBoundingClientRect();return {label:n.textContent,width:r.width,height:r.height}})};
     })()`);
     console.log(`${width}x${height} report expanded: document=${result.scrollWidth}/${result.width}; dialog=${result.dialogScroll}/${result.dialogWidth}; min target=${Math.min(...result.targets.map(t=>t.width)).toFixed(1)}x${Math.min(...result.targets.map(t=>t.height)).toFixed(1)}`);
     assert.ok(result.scrollWidth <= result.width && result.dialogScroll <= result.dialogWidth, JSON.stringify(result));

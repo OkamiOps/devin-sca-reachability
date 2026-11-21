@@ -1,4 +1,18 @@
 /* Product workspace: clear evidence, a compact workbench, and persistent navigation. */
+.finding-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 12px; }
+.finding-filters button { min-height: 44px; border-radius: 9px; }
+.finding-filters button[aria-pressed="true"] { background: var(--warm); color: var(--accent); border-color: var(--accent); }
+.finding-filters span { margin-left: 6px; font-variant-numeric: tabular-nums; }
+.finding-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding-top: 18px; }
+.finding-pagination button, .commit-link { min-height: 44px; min-width: 44px; }
+.commit-link { display: inline-flex; align-items: center; font-size: 11px; }
+.public-report .finding { scroll-margin-top: 110px; }
+@media (max-width: 600px) {
+  #mode { white-space: normal; max-width: 215px; line-height: 1.5; }
+  .finding-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .finding-filters button { font-size: 11px; padding-inline: 8px; }
+  .public-report a { display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; max-width: 100%; }
+}
 :root {
   color-scheme: light;
   --bg: #f5f6f3; --surface: #fff; --text: #202d29; --text-muted: #64716b;

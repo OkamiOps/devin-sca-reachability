@@ -19,7 +19,7 @@ function harness(responder) {
       innerHTML: "", textContent: "", hidden: true, open: false,
       listeners: {}, classList: { toggle() {} }, setAttribute() {},
       addEventListener(name, handler) { this.listeners[name] = handler; },
-      contains() { return false; }, focus(options) { this.focusOptions = options; }, replaceChildren() {},
+      contains() { return false; }, focus(options) { this.focusOptions = options; }, replaceChildren() {}, scrollIntoView() {},
       close() { this.open = false; this.listeners.close?.(); }, showModal() { this.open = true; },
     });
     return nodes.get(selector);
@@ -711,4 +711,33 @@ test("a late branch response cannot overwrite a more recent installation scope",
   assert.equal(app.state.installation, 3);
   assert.equal(app.state.repository, 4);
   assert.equal(app.state.branches[0].name, "new");
+});
+
+test("public login identifies the operator token without a demo hint", async () => {
+  const app = harness(async path => path === "/api/meta" ? { body: { mode: "public", github_configured: true } } : { status: 401 });
+  await app.boot();
+  const html = app.nodes.get("#main").innerHTML;
+  assert.match(html, /SCA_DASHBOARD_TOKEN/);
+  assert.doesNotMatch(html, /local-demo|demo-login|CONEXÃO INDISPONÍVEL/);
+  assert.match(app.nodes.get("#mode").outerHTML, /GitHub público/);
+});
+
+test("public report keeps only one page and its filters do not change classifications", async () => {
+  const findings = Array.from({ length: 437 }, (_, id) => ({ id: `CVE-2024-${1000 + id}`, reachability: id < 422 ? "unknown" : "reachable", package_name: "example", version: "1.0.0" }));
+  const app = harness(async () => ({ body: { status: "completed", source: "github", repository: "org/repo", commit_sha: "a".repeat(40), findings, components: [] } }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "public" } });
+  await app.openDetail("scan");
+  const markup = () => app.nodes.get("#report-findings").innerHTML;
+  assert.equal((markup().match(/<article /g) || []).length, 10);
+  assert.match(markup(), /Alcançável/); assert.doesNotMatch(markup(), /<details open>/);
+  assert.match(app.nodes.get("#detail-content").innerHTML, /Origem: GitHub público/);
+  assert.match(app.nodes.get("#detail-content").innerHTML, /github.com\/org\/repo\/commit\/a{40}/);
+  const target = { dataset: { action: "finding-filter", filter: "unknown" } };
+  await app.events.get("click")({ target: { closest() { return target; } } });
+  assert.equal(app.state.findingFilter, "unknown");
+  assert.match(markup(), /422 achados/);
+  assert.equal(findings[0].reachability, "unknown");
+  target.dataset.filter = "unreachable";
+  await app.events.get("click")({ target: { closest() { return target; } } });
+  assert.match(markup(), /Nenhum achado neste filtro/);
 });

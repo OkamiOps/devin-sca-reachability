@@ -16,6 +16,30 @@ export function count(value) {
   return Number.isFinite(value) && value >= 0 ? new Intl.NumberFormat("pt-BR").format(value) : "—";
 }
 
+export function supportedMode(mode) { return ["demo", "live", "public"].includes(mode); }
+
+export function githubLink(scan, path = null, line = null) {
+  if (scan?.source !== "github" || !/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(scan.repository || "") ||
+      !/^[a-f0-9]{40}$/i.test(scan.commit_sha || "")) return null;
+  const base = `https://github.com/${scan.repository.split('/').map(encodeURIComponent).join('/')}`;
+  if (path === null) return `${base}/commit/${scan.commit_sha}`;
+  if (typeof path !== "string" || /[\\\x00-\x1f]/.test(path) || path.split('/').some(p => !p || p === '.' || p === '..') ||
+      (line !== null && (!Number.isSafeInteger(line) || line < 1))) return null;
+  return `${base}/blob/${scan.commit_sha}/${path.split('/').map(encodeURIComponent).join('/')}${line === null ? '' : `#L${line}`}`;
+}
+
+export function advisoryURL(id) {
+  return typeof id === "string" && !id.startsWith("DEMO-") && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)
+    ? `https://osv.dev/vulnerability/${encodeURIComponent(id)}` : null;
+}
+
+export function findingPage(findings, filter = "all", page = 0, size = 10) {
+  const sorted = sortFindings(findings).filter(f => filter === "all" || reachabilityPresentation(f.reachability).tone === filter);
+  const pages = Math.max(1, Math.ceil(sorted.length / size));
+  const current = Math.max(0, Math.min(page, pages - 1));
+  return { items: sorted.slice(current * size, (current + 1) * size), total: sorted.length, page: current, pages };
+}
+
 export function scanLabel(status) {
   return ({ queued: "Na fila", running: "Em andamento", completed: "Concluída", failed: "Falhou" })[status] || "Estado desconhecido";
 }

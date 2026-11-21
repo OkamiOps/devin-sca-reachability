@@ -67,6 +67,16 @@ class NpmReachabilityTests(unittest.TestCase):
                 self.assertEqual(result.status, UNKNOWN)
                 self.assertIn("Desconhecido não significa seguro", result.reason)
 
+    def test_nodegoat_config_blocks_negative_proof_not_complete_unimported_sources(self):
+        config = ('const path = require("path");\n'
+                  'const allConf = require(path.resolve(__dirname + "/../config/env/all.js"));\n'
+                  'const envConf = require(path.resolve(__dirname + "/../config/env/" + finalEnv.toLowerCase() + ".js")) || {};\n')
+        result = run("npm", "grunt", {"config/config.js": config, "main.js": "const x = 1;"})
+        self.assertEqual(result.status, UNKNOWN)
+        self.assertEqual(result.evidence[0].kind, "dynamic")
+        self.assertEqual(result.evidence[0].path, "config/config.js")
+        self.assertEqual(run("npm", "grunt", {"main.js": "const x = 1;"}).status, UNREACHABLE)
+
     def test_import_without_call_and_without_symbol_data_is_unknown(self):
         result = run("npm", "lodash", {"a.js": "import 'lodash';\n"})
         self.assertEqual(result.status, UNKNOWN)

@@ -5,6 +5,39 @@ import { readFile } from "node:fs/promises";
 // No package.json or build is needed to exercise the browser's pure ES module.
 const source = await readFile(new URL("../src/sca_reachability/static/model.js", import.meta.url), "utf8");
 const { escapeHTML, count, isDirty, reachabilityLabel, explanationPresentation, scopedRepositoryPath, formatDate, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const { supportedMode, githubLink, advisoryURL, findingPage } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+
+test("public is a supported mode, but unknown modes are rejected", () => {
+  for (const mode of ["demo", "live", "public"]) assert.equal(supportedMode(mode), true);
+  for (const mode of [null, undefined, "PUBLIC", "__proto__", ""]) assert.equal(supportedMode(mode), false);
+});
+test("GitHub links use the exact commit and safely encoded source path and line", () => {
+  const scan = { source: "github", repository: "owner/repo", commit_sha: "a".repeat(40) };
+  const base = `https://github.com/owner/repo`;
+  assert.equal(githubLink(scan), `${base}/commit/${scan.commit_sha}`);
+  assert.equal(githubLink(scan, "src/a b#ç?.js", 129), `${base}/blob/${scan.commit_sha}/src/a%20b%23%C3%A7%3F.js#L129`);
+  for (const path of ["../x", "/x", "a//b", "a/./b", "a\\b", "a\nx"]) assert.equal(githubLink(scan, path), null);
+  for (const line of ["1", -1, 0, 1.5, Infinity]) assert.equal(githubLink(scan, "a.js", line), null);
+  for (const change of [{ source: "demo" }, { repository: "javascript:alert(1)" }, { repository: "a/.." }, { repository: "a/b?x" }, { commit_sha: "main" }]) assert.equal(githubLink({ ...scan, ...change }), null);
+  assert.equal(githubLink(null), null);
+});
+test("OSV links accept public identifiers without accepting active URLs or demo IDs", () => {
+  assert.equal(advisoryURL("GHSA-fwr7-v2mv-hh25"), "https://osv.dev/vulnerability/GHSA-fwr7-v2mv-hh25");
+  for (const id of [null, "", "DEMO-0001", "../x", "https://evil.invalid", "x\" onclick=\"x"]) assert.equal(advisoryURL(id), null);
+});
+test("large finding sets paginate in reachability order and preserve unknown", () => {
+  const findings = Array.from({ length: 437 }, (_, i) => ({ id: i, reachability: i < 422 ? "unknown" : "reachable" }));
+  const page = findingPage(findings);
+  assert.equal(page.total, 437); assert.equal(page.pages, 44); assert.equal(page.items.length, 10);
+  assert.ok(page.items.every(f => f.reachability === "reachable"));
+  assert.equal(findingPage(findings, "unknown").total, 422);
+  assert.equal(findingPage(findings, "unreachable").items.length, 0);
+  assert.equal(findingPage(findings, "all", 999).items.length, 7);
+  assert.equal(findingPage(findings, "all", -1).page, 0);
+  assert.deepEqual(findingPage(undefined).items, []);
+  assert.equal(findingPage([{ reachability: "safe" }], "unknown").total, 1);
+  assert.equal(findings[0].id, 0);
+});
 
 test("untrusted GitHub and AI strings cannot become active HTML or attribute markup", () => {
   assert.equal(escapeHTML('<img src=x onerror="x()">&\''), "&lt;img src=x onerror=&quot;x()&quot;&gt;&amp;&#39;");
