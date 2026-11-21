@@ -1,6 +1,6 @@
 # Devin SCA Reachability
 
-A defensive SCA pilot with an unchanged offline CLI and an optional GitHub branch-monitoring server. Reachability remains **unknown**: dependency presence and AI explanations do not prove vulnerable code executes.
+A defensive SCA pilot with an unchanged offline CLI and an optional GitHub branch-monitoring server. The server classifies each finding as **reachable**, **unreachable**, or **unknown** by static analysis of npm (JavaScript/TypeScript) and Python sources, with file/line evidence in the report. Monitored code is only read, never executed. **Unknown is never safe**, unreachable holds only for the analyzed commit, and AI explanations never change the classification.
 
 ## Optional branch-monitoring server
 
@@ -11,7 +11,7 @@ python -m pip install '.[server]'
 SCA_MODE=demo SCA_DATABASE_PATH=./demo.sqlite3 sca-reachability-serve
 ~~~
 
-Open http://127.0.0.1:8000 and sign in with `local-demo` (accepted **only** in explicit demo mode). The fictional installation/repository offers main, develop, and release. Main starts selected with one completed synthetic scan. Select release and simulate a push to compare fictional package 1.0.0 (DEMO-0001) with 1.1.0 (no matching synthetic advisory). Demo uses the same inventory/queue/correlation pipeline with local adapters and never calls GitHub, OSV, or AI.
+Open http://127.0.0.1:8000 and sign in with `local-demo` (accepted **only** in explicit demo mode). The fictional installation/repository offers main, develop, and release. Main starts selected with one completed synthetic scan. Its report shows all three reachability states with evidence: DEMO-0001 is reachable (`src/server.js` imports and calls `renderTemplate`), DEMO-0002 is unreachable (`worker/jobs.py` imports the package but never calls `unsafe_load`), and DEMO-0003 is unknown (`src/plugins.js` uses a dynamic `require`). Select release and simulate a push to compare fictional package 1.0.0 with 1.1.0. Demo uses the same inventory/queue/correlation pipeline with local adapters and never calls GitHub, OSV, or AI.
 
 Live is the default mode and denies installation access until configured. It supports read-only GitHub dependency metadata, branch selections, signed/idempotent webhooks, a durable SQLite worker, exact-version OSV correlation, scoped history, and optional sanitized AI explanations. It never clones or executes repository code or provisions a GitHub App.
 
@@ -21,7 +21,7 @@ See [backend setup and security boundaries](docs/backend.md), [dashboard behavio
 
 - Reads the supported flat subset of CycloneDX JSON and requires each component to have a package URL (purl) and version. This is not full CycloneDX schema validation; non-empty nested component arrays are rejected rather than silently ignored.
 - Reads a local OSV querybatch response. Its results array must contain exactly one result per SBOM component, in the same order. The optional queries echo is custom fixture metadata, not part of the native OSV querybatch response; when it is absent, the caller must ensure ordering because count alone cannot verify component identity. Error results and non-empty pagination tokens are rejected as incomplete input.
-- Preserves every supplied advisory and reports reachability as **unknown**. Imports or dependency presence alone are not treated as proof that a vulnerable code path executes.
+- Preserves every supplied advisory and reports reachability as **unknown** (the CLI receives no source code; static analysis runs in the server). Imports or dependency presence alone are not treated as proof that a vulnerable code path executes.
 - Emits a JSON report to stdout. Input errors go to stderr with a non-zero exit status.
 
 An empty result means **no findings in the supplied data**, not that the project or its dependencies are safe. The included DEMO-0001 advisory and fictional package are illustrative fixtures, not real vulnerability data.

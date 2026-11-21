@@ -100,7 +100,7 @@ test("report section navigation keeps evidence, explanation, and inventory separ
     assert.ok(html.includes(`data-section="${section}"`));
     assert.ok(html.includes(`id="${section}"`));
   }
-  assert.match(html, /Não avaliado/);
+  assert.match(html, /Alcance estático/);
   assert.match(html, /não significa que o projeto está livre de vulnerabilidades/);
 });
 
@@ -118,7 +118,19 @@ test("evidence explains exact-version provenance honestly in demo and live modes
   assert.match(html, /locks\/package-lock.json/);
   assert.match(html, /aaaaaaa/);
   assert.match(html, /não houve consulta ao OSV/);
-  assert.match(html, /Não foi feita análise de fluxo\/chamadas; por isso o alcance é desconhecido/);
+  assert.match(html, /Nenhuma análise de chamadas foi registrada para este achado; o alcance permanece desconhecido/);
+  assert.match(html, /Desconhecido não significa seguro/);
+  const reached = app.findingMarkup({ ...evidenceFinding, reachability: "reachable",
+    reachability_reason: "Chamada ao símbolo renderTemplate encontrada em src/server.js:7.",
+    reachability_analysis: { files_scanned: 2, language: "JavaScript/TypeScript", granularity: "symbol", symbols: ["renderTemplate"] },
+    reachability_evidence: [{ path: "src/server.js", line: 2, kind: "import", detail: "import 'x'", snippet: "import { renderTemplate } from 'x';" },
+      { path: "src/server.js", line: 7, kind: "call", detail: "renderTemplate()", snippet: "renderTemplate('<img onerror=x>')" }] }, evidenceScan);
+  assert.match(reached, /badge reachable/);
+  assert.match(reached, /src\/server.js:2[\s\S]*src\/server.js:7/);
+  assert.match(reached, /Chama/);
+  assert.match(reached, /2 arquivos/);
+  assert.match(reached, /&lt;img onerror=x&gt;/);
+  assert.doesNotMatch(reached, /<img onerror/);
   assert.match(html, /DEMO-0001 · fictício/);
   assert.doesNotMatch(html, /href="https:/);
   app.state.meta.mode = "live";
@@ -137,7 +149,11 @@ test("evidence links only known safe destinations and instructions escape untrus
   for (const path of ["../package-lock.json", "/package-lock.json"]) assert.doesNotMatch(app.manifestLink(path, { ...evidenceScan, source: "github" }), /<a /);
   assert.doesNotMatch(app.manifestLink("package-lock.json", { ...evidenceScan, source: "github", repository: "evil.invalid/repo/path" }), /<a /);
   const instruction = app.findingInstructions(evidenceFinding, evidenceScan);
-  assert.match(instruction, /fictional-demo-package 1.1.0 em locks\/package-lock.json; atualize, teste e execute nova análise/);
+  assert.match(instruction, /Atualize fictional-demo-package para 1.1.0 em locks\/package-lock.json, teste e execute nova análise/);
+  assert.match(instruction, /Alcance desconhecido/);
+  assert.match(app.findingInstructions({ ...evidenceFinding, reachability: "reachable" }, evidenceScan), /^Prioridade/);
+  assert.match(app.findingInstructions({ ...evidenceFinding, reachability: "unreachable" }, evidenceScan), /continua vulnerável/);
+  assert.match(app.manifestLink("src/a.js", { ...evidenceScan, source: "github", commit_sha: "a".repeat(40), repository: "org/repo" }, 7), /blob\/a{40}\/src\/a\.js#L7"[^>]*>src\/a\.js:7</);
   assert.match(app.findingInstructions({ ...evidenceFinding, fixed_versions: [] }, evidenceScan), /sem versão corrigida informada/);
   assert.match(app.findingInstructions(evidenceFinding, { components: [] }), /manifesto não informado/);
   const html = app.findingMarkup({ ...evidenceFinding, package_name: '"><img src=x onerror=x>' }, evidenceScan);

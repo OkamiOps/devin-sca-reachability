@@ -1,4 +1,4 @@
-import { escapeHTML as e, formatDate, count, scanLabel, reachabilityLabel, isDirty, scopedRepositoryPath, explanationPresentation } from "/model.js";
+import { escapeHTML as e, formatDate, count, scanLabel, reachabilityLabel, isDirty, scopedRepositoryPath, explanationPresentation, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts } from "/model.js";
 
 const $ = selector => document.querySelector(selector);
 const state = {
@@ -73,7 +73,7 @@ function demo() { return state.meta?.mode === "demo"; }
 function repo() { return state.repositories.find(value => String(value.id) === String(state.repository)); }
 function repositoryPath() { return scopedRepositoryPath(state.installation, state.repository); }
 function badge(text, kind = "muted", dot = false) {
-  const safeKind = ["muted", "live", "demo", "unknown", "failed", "completed", "queued", "running", "error"].includes(kind) ? kind : "muted";
+  const safeKind = ["muted", "live", "demo", "unknown", "failed", "completed", "queued", "running", "error", "reachable", "unreachable"].includes(kind) ? kind : "muted";
   return `<span class="badge ${safeKind}">${dot ? '<span class="dot" aria-hidden="true"></span>' : ""}${e(text)}</span>`;
 }
 function notice(message, error = false, connection = false) {
@@ -180,7 +180,7 @@ function scanTable(scans) {
   if (!scans.length) return empty("Nenhuma análise por aqui, ainda.", "Selecione as branches que deseja monitorar. As análises aparecerão aqui após um envio de código ou uma execução manual.", '<a href="#branches" class="button">Selecionar branches <span aria-hidden="true">→</span></a>');
   return `<div class="table-wrap responsive-table"><table role="table"><caption class="sr-only">${demo() ? "Análises sintéticas" : "Análises recebidas do serviço"}</caption><thead><tr><th scope="col">Repositório / branch</th><th scope="col">Estado</th><th scope="col">Achados</th><th scope="col">Atualização</th><th scope="col">Relatório</th></tr></thead><tbody>${scans.map(scan => `<tr>
     <td data-label="Repositório / branch"><strong class="break">${e(scan.repository)}</strong><span class="secondary mono">↳ ${e(scan.branch)} <span aria-hidden="true">·</span> ${e(scan.commit_sha?.slice(0, 7) || "sem commit")}</span>${scan.source === "demo" ? badge("Sintético", "demo") : scan.source === "github" ? "" : badge("Origem não informada")}</td>
-    <td data-label="Estado">${badge(scanLabel(scan.status), scan.status, true)}</td><td data-label="Achados"><span class="finding-count ${scan.finding_count > 0 ? "has-findings" : ""}">${scan.status === "completed" ? count(scan.finding_count) : "—"}</span>${Array.isArray(scan.advisory_ids) ? scan.advisory_ids.map(id => `<span class="secondary mono">${e(id)}</span>`).join("") : ""}</td>
+    <td data-label="Estado">${badge(scanLabel(scan.status), scan.status, true)}</td><td data-label="Achados"><span class="finding-count ${scan.finding_count > 0 ? "has-findings" : ""}">${scan.status === "completed" ? count(scan.finding_count) : "—"}</span>${scan.status === "completed" && scan.finding_count > 0 && scan.reachability_counts ? `<span class="reach-mini">${["reachable", "unknown", "unreachable"].filter(key => scan.reachability_counts[key] > 0).map(key => `<span class="${key}"><i aria-hidden="true"></i>${count(scan.reachability_counts[key])} ${e(reachabilityPresentation(key).label.toLowerCase())}</span>`).join("")}</span>` : ""}${Array.isArray(scan.advisory_ids) ? scan.advisory_ids.map(id => `<span class="secondary mono">${e(id)}</span>`).join("") : ""}</td>
     <td data-label="Atualização" class="secondary">${e(formatDate(scan.completed_at || scan.created_at))}</td><td data-label="Relatório">${button("Ver análise →", "detail", "text-button", false, `data-id="${e(scan.id)}" aria-label="Ver análise de ${e(scan.repository)}, branch ${e(scan.branch)}"`)}</td>
   </tr>`).join("")}</tbody></table></div>`;
 }
@@ -388,19 +388,24 @@ function advisoryLink(id) {
   const valid = /^(?:CVE-\d{4}-\d{4,}|GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}|[A-Z][A-Z0-9]*-\d{4}-[A-Za-z0-9.-]+)$/.test(id);
   return valid ? `<a href="https://osv.dev/vulnerability/${encodeURIComponent(id)}" target="_blank" rel="noopener noreferrer">${e(id)}</a>` : e(id);
 }
-function manifestLink(path, scan) {
+function manifestLink(path, scan, line = null) {
+  const label = line ? `${path}:${line}` : path;
   const repository = scan.repository;
   const validRepository = typeof repository === "string" && /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/.test(repository) && ![".", ".."].includes(repository.split("/")[1]);
   const parts = path.split("/");
-  if (demo() || scan.source !== "github" || !validRepository || !/^[0-9a-f]{40}$/i.test(scan.commit_sha || "") || parts.some(part => !part || part === "." || part === "..")) return e(path);
-  const url = `https://github.com/${repository.split("/").map(encodeURIComponent).join("/")}/blob/${scan.commit_sha}/${parts.map(encodeURIComponent).join("/")}`;
-  return `<a href="${e(url)}" target="_blank" rel="noopener noreferrer">${e(path)}</a>`;
+  if (demo() || scan.source !== "github" || !validRepository || !/^[0-9a-f]{40}$/i.test(scan.commit_sha || "") || parts.some(part => !part || part === "." || part === "..")) return e(label);
+  const url = `https://github.com/${repository.split("/").map(encodeURIComponent).join("/")}/blob/${scan.commit_sha}/${parts.map(encodeURIComponent).join("/")}${line ? `#L${line}` : ""}`;
+  return `<a href="${e(url)}" target="_blank" rel="noopener noreferrer">${e(label)}</a>`;
 }
 function findingInstructions(finding, scan) {
   const versions = Array.isArray(finding.fixed_versions) ? finding.fixed_versions : [];
   const version = versions.length ? versions.join(" ou ") : "(sem versão corrigida informada)";
   const manifests = findingManifests(finding, scan).join(", ") || "manifesto não informado";
-  return `Verifique a compatibilidade de ${finding.package_name || "componente não informado"} ${version} em ${manifests}; atualize, teste e execute nova análise. A presença da dependência não comprova alcance.`;
+  const lead = ({
+    reachable: "Prioridade: o código chama o alvo do aviso.",
+    unreachable: "Nenhuma chamada encontrada, mas a dependência continua vulnerável.",
+  })[finding.reachability] || "Alcance desconhecido: revise manualmente os pontos indicados e trate como potencialmente alcançável.";
+  return `${lead} Atualize ${finding.package_name || "o componente"} para ${version} em ${manifests}, teste e execute nova análise.`;
 }
 async function copyInstructions(text) {
   try {
@@ -417,8 +422,19 @@ function findingMarkup(finding, scan) {
   const paths = findingManifests(finding, scan);
   const manifests = paths.length ? paths.map(path => manifestLink(path, scan)).join(", ") : "manifesto não informado";
   const instructions = findingInstructions(finding, scan);
-  return `<article class="finding"><div class="section-heading"><h3>${e(finding.advisory_id || finding.id)}</h3>${badge(reachabilityLabel(finding.reachability), finding.reachability === "unknown" ? "unknown" : "muted")}</div><p><strong>${e(finding.package_name)}</strong> <span class="mono secondary">${e(finding.version)}</span> <span class="secondary">· Severidade: ${severity}</span></p><p class="secondary">${e(finding.summary || "O aviso não inclui um resumo.")}</p>
-    <details open><summary>Ver evidências e limites</summary><div class="evidence"><h4>Por que este achado apareceu?</h4><p><span class="mono">${e(finding.package_name)}@${e(finding.version)}</span> encontrado em ${manifests} no commit <span class="mono">${e(scan.commit_sha?.slice(0, 7) || "não informado")}</span>. ${scan.source === "demo" ? "Correlação sintética por versão exata com o aviso fictício; não houve consulta ao OSV." : "Correspondência com o aviso por versão exata via OSV."}</p><p>Não foi feita análise de fluxo/chamadas; por isso o alcance é desconhecido.</p><dl><dt>Identificador</dt><dd class="mono">${advisoryLink(finding.advisory_id || finding.id)}</dd><dt>Componente</dt><dd class="mono">${e(finding.purl || finding.package_name)}</dd><dt>Ecossistema</dt><dd>${e(finding.ecosystem || "Não informado")}</dd><dt>Correção informada</dt><dd>${e(finding.fixed_versions?.length ? finding.fixed_versions.join(", ") : "Nenhuma versão informada nos dados")}</dd><dt>Alcance</dt><dd>${e(reachabilityLabel(finding.reachability))}. A presença da dependência não prova que o caminho vulnerável é executado.</dd></dl></div></details>
+  const reach = reachabilityPresentation(finding.reachability);
+  const steps = evidenceSteps(finding.reachability_evidence);
+  const analysis = finding.reachability_analysis && typeof finding.reachability_analysis === "object" ? finding.reachability_analysis : {};
+  const symbols = Array.isArray(analysis.symbols) ? analysis.symbols.filter(symbol => typeof symbol === "string") : [];
+  const method = typeof analysis.language === "string" && Number.isInteger(analysis.files_scanned)
+    ? `Análise estática de ${e(analysis.language)} em ${count(analysis.files_scanned)} ${analysis.files_scanned === 1 ? "arquivo" : "arquivos"}, ${symbols.length ? `procurando chamadas a <span class="mono">${symbols.map(e).join(", ")}</span>` : "no nível do pacote, porque o aviso não identifica a função vulnerável"}. O código monitorado foi apenas lido, nunca executado.`
+    : "Nenhuma análise de chamadas foi registrada para este achado; o alcance permanece desconhecido.";
+  const codePath = steps.length
+    ? `<ol class="code-path" aria-label="Caminho no código">${steps.map(step => `<li class="step-${step.kind}"><div class="step-head"><span class="step-kind">${e(step.kindLabel)}</span><span class="mono step-location">${manifestLink(step.path, scan, step.line)}</span></div>${step.detail ? `<span class="step-detail mono">${e(step.detail)}</span>` : ""}${step.snippet ? `<pre><code>${e(step.snippet)}</code></pre>` : ""}</li>`).join("")}</ol>`
+    : `<p class="secondary">Nenhum trecho de código foi registrado como evidência${finding.reachability === "unreachable" ? ": o pacote não é importado nos arquivos analisados" : ""}.</p>`;
+  return `<article class="finding"><div class="section-heading"><h3>${e(finding.advisory_id || finding.id)}</h3>${badge(reach.label, reach.tone, true)}</div><p><strong>${e(finding.package_name)}</strong> <span class="mono secondary">${e(finding.version)}</span> <span class="secondary">· Severidade: ${severity}</span></p><p class="secondary">${e(finding.summary || "O aviso não inclui um resumo.")}</p>
+    <div class="reach-callout ${reach.tone}"><span class="eyebrow">ALCANCE ESTÁTICO · ${e(reach.label.toUpperCase())}</span><strong>${e(reach.headline)}</strong><p>${e(finding.reachability_reason || reach.caveat)}</p>${finding.reachability_reason && !finding.reachability_reason.includes(reach.caveat.split(".")[0]) ? `<p class="small">${e(reach.caveat)}</p>` : ""}</div>
+    <details open><summary>Ver evidências e limites</summary><div class="evidence"><h4>Por que este achado apareceu?</h4><p><span class="mono">${e(finding.package_name)}@${e(finding.version)}</span> encontrado em ${manifests} no commit <span class="mono">${e(scan.commit_sha?.slice(0, 7) || "não informado")}</span>. ${scan.source === "demo" ? "Correlação sintética por versão exata com o aviso fictício; não houve consulta ao OSV." : "Correspondência com o aviso por versão exata via OSV."}</p><h4>Caminho no código</h4><p class="secondary">${method}</p>${codePath}<dl><dt>Identificador</dt><dd class="mono">${advisoryLink(finding.advisory_id || finding.id)}</dd><dt>Componente</dt><dd class="mono">${e(finding.purl || finding.package_name)}</dd><dt>Ecossistema</dt><dd>${e(finding.ecosystem || "Não informado")}</dd><dt>Correção informada</dt><dd>${e(finding.fixed_versions?.length ? finding.fixed_versions.join(", ") : "Nenhuma versão informada nos dados")}</dd><dt>Alcance</dt><dd>${e(reach.label)}. ${e(reach.caveat)}</dd></dl></div></details>
     <section class="next-step"><h4>Próximo passo</h4><p>${e(instructions)}</p>${button("Copiar instruções", "copy-instructions", "quiet", false, `data-instructions="${e(instructions)}"`)}</section></article>`;
 }
 function demoSourceMarkup(scan) {
@@ -447,7 +463,8 @@ async function openDetail(id, polling = false, origin = null) {
     const scan = await api(`/api/scans/${encodeURIComponent(id)}`);
     if (!state.authenticated || !dialog.open || epoch !== state.detailEpoch) return;
     const explanation = explanationPresentation(scan.explanation);
-    const findings = Array.isArray(scan.findings) ? scan.findings : [];
+    const findings = sortFindings(scan.findings);
+    const reachCounts = reachabilityCounts(findings);
     const components = Array.isArray(scan.components) ? scan.components : [];
     const warnings = Array.isArray(scan.warnings) ? scan.warnings : [];
     const pending = ["queued", "running"].includes(scan.status);
@@ -455,7 +472,7 @@ async function openDetail(id, polling = false, origin = null) {
       <div class="inline">${badge(scanLabel(scan.status), scan.status)}${badge(scan.source === "demo" ? "Demonstração · dados fictícios" : scan.source === "github" ? "Origem: GitHub" : "Origem não informada", scan.source === "demo" ? "demo" : "muted")}</div>
     <div class="dialog-meta"><span class="break">${e(scan.repository)} <span aria-hidden="true">/</span> ${e(scan.branch)}</span><span class="mono id-chip" title="${e(scan.commit_sha || "não informado")}">Commit ${e(scan.commit_sha || "não informado")}</span><span>${e(formatDate(scan.completed_at || scan.created_at))}</span></div>
       <nav class="report-nav" aria-label="Seções do relatório"><button type="button" data-action="report-section" data-section="report-findings">Achados <span>${count(findings.length)}</span></button><button type="button" data-action="report-section" data-section="report-explanation">${explanation.ai ? "Leitura por IA" : "Resumo local"}</button><button type="button" data-action="report-section" data-section="report-components">Componentes <span>${count(components.length)}</span></button><button type="button" data-action="report-section" data-section="report-limits">Limites e origem</button></nav>
-      ${scan.status === "completed" ? `<div class="report-summary"><div><span>Achados técnicos</span><strong>${count(findings.length)}</strong></div><div><span>Componentes</span><strong>${count(components.length)}</strong></div><div><span>Alcance</span><strong class="unknown-text">Não avaliado</strong></div></div>` : ""}
+      ${scan.status === "completed" ? `<div class="report-summary"><div><span>Achados técnicos</span><strong>${count(findings.length)}</strong></div><div><span>Componentes</span><strong>${count(components.length)}</strong></div><div class="reach-summary"><span>Alcance estático</span><div class="reach-counts">${["reachable", "unknown", "unreachable"].map(key => `<b class="reach-count ${key}"><i aria-hidden="true"></i>${count(reachCounts[key])}<small>${e(reachabilityPresentation(key).label)}</small></b>`).join("")}</div></div></div>` : ""}
       <div id="report-limits" class="report-anchor" tabindex="-1">${scan.source === "demo" ? '<p class="note">Este relatório é sintético. Não representa o estado de segurança de um projeto real.</p>' : ""}${demoSourceMarkup(scan)}
       ${scan.status === "failed" ? `<p class="note form-error">A análise falhou e não produziu resultados. Nenhuma conclusão de segurança pode ser extraída.</p><p>Você pode tentar novamente com a mesma branch e o mesmo commit, se a branch continuar monitorada.</p>${button("Tentar novamente", "retry-scan", "quiet", false, `data-id="${e(id)}"`)}<p id="detail-action-error" class="form-error" role="alert"></p>` : ""}
       ${pending ? `<p class="note">Resultados ainda não calculados. Acompanhando automaticamente. ${button("Atualizar agora", "detail", "text-button", false, `data-id="${e(id)}"`)}</p>` : ""}

@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 
 // No package.json or build is needed to exercise the browser's pure ES module.
 const source = await readFile(new URL("../src/sca_reachability/static/model.js", import.meta.url), "utf8");
-const { escapeHTML, count, isDirty, reachabilityLabel, explanationPresentation, scopedRepositoryPath, formatDate } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const { escapeHTML, count, isDirty, reachabilityLabel, explanationPresentation, scopedRepositoryPath, formatDate, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 
 test("untrusted GitHub and AI strings cannot become active HTML or attribute markup", () => {
   assert.equal(escapeHTML('<img src=x onerror="x()">&\''), "&lt;img src=x onerror=&quot;x()&quot;&gt;&amp;&#39;");
@@ -46,4 +46,30 @@ test("missing metrics and malformed timestamps are not displayed as real zero re
   assert.equal(count(null), "—"); assert.equal(count(undefined), "—");
   assert.equal(count(-1), "—"); assert.equal(count(0), "0");
   assert.equal(formatDate("invalid"), "Data indisponível");
+});
+
+test("each reachability state keeps a distinct caveat and unknown is never presented as safe", () => {
+  assert.equal(reachabilityPresentation("reachable").tone, "reachable");
+  assert.match(reachabilityPresentation("unknown").caveat, /não significa seguro/);
+  assert.match(reachabilityPresentation("unreachable").caveat, /Não é garantia/);
+  for (const status of ["safe", undefined, "__proto__"]) {
+    assert.equal(reachabilityPresentation(status).tone, "unknown");
+    assert.match(reachabilityPresentation(status).caveat, /não significa seguro/);
+  }
+});
+test("evidence steps keep file, line and path and drop malformed entries", () => {
+  const steps = evidenceSteps([
+    { path: "src/server.js", line: 2, kind: "import", detail: "import 'pkg'", snippet: "import x from 'pkg';" },
+    { path: "src/server.js", line: 7, kind: "call", detail: "renderTemplate()", snippet: "<b>x</b>" },
+    { path: "src/x.js", line: "7", kind: "call" }, { line: 1 }, null, { path: "a.js", line: 3, kind: "<script>" },
+  ]);
+  assert.deepEqual(steps.map(step => [step.location, step.kind, step.kindLabel]), [
+    ["src/server.js:2", "import", "Importa"], ["src/server.js:7", "call", "Chama"], ["a.js:3", "other", "Evidência"],
+  ]);
+  assert.deepEqual(evidenceSteps("not a list"), []);
+});
+test("findings are ordered reachable, unknown, unreachable and counted without trusting labels", () => {
+  const findings = [{ id: "c", reachability: "unreachable" }, { id: "b", reachability: "unknown" }, { id: "a", reachability: "reachable" }, { id: "d", reachability: "safe" }];
+  assert.deepEqual(sortFindings(findings).map(item => item.id), ["a", "b", "d", "c"]);
+  assert.deepEqual(reachabilityCounts(findings), { reachable: 1, unknown: 2, unreachable: 1 });
 });
