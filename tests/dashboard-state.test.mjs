@@ -43,7 +43,7 @@ function harness(responder) {
       return new Response(JSON.stringify(result.body ?? {}), { status: result.status ?? 200, headers: { "Content-Type": "application/json" } });
     },
   };
-  vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped, overview, activity, scanTable, branchRows, simulationControls, renderLogin, openDetail, focusMain, matchingScans, resultsList, refresh, selectFiltered, findingMarkup, advisoryLink, manifestLink, findingInstructions, copyInstructions, selectionSummary, renderView };`, sandbox);
+  vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped, overview, activity, branches, scanTable, branchRows, simulationControls, renderLogin, openDetail, focusMain, matchingScans, resultsList, refresh, selectFiltered, findingMarkup, advisoryLink, manifestLink, findingInstructions, copyInstructions, selectionSummary, renderView };`, sandbox);
   return { ...sandbox.testApp, nodes, calls, events, windowEvents, timers, clipboard, document: sandbox.document,
     async tick(delay) {
       const entry = [...timers].find(([, timer]) => timer.delay === delay);
@@ -226,8 +226,8 @@ test("activity separates webhook outcome from the linked scan state and handles 
   app.state.meta = { mode: "demo" };
   app.state.deliveries = [{ event: "push", status: "queued", scan_id: 'id"<', scan_status: "completed" }, { event: "push", status: "ignored" }];
   const html = app.activity();
-  assert.match(html, /Análise enfileirada/);
-  assert.match(html, /Análise: Concluída/);
+  assert.match(html, /O que o evento fez[\s\S]*Encaminhou para análise[\s\S]*Análise atual[\s\S]*Concluída/);
+  assert.doesNotMatch(html, /Análise enfileirada|Análise: Concluída/);
   assert.match(html, /data-id="id&quot;&lt;"/);
   assert.equal((html.match(/data-action="detail"/g) || []).length, 1);
 });
@@ -467,7 +467,7 @@ test("polling renders overview and activity even when the main content owns focu
     app.nodes.set("#main", { contains() { return true; }, setAttribute() {}, focus() {} });
     app.document.activeElement = { id: "main" };
     await app.refresh({ full: false, silent: true });
-    assert.match(app.nodes.get("#main").innerHTML, view === "activity" ? /Análise enfileirada/ : /Simulado/);
+    assert.match(app.nodes.get("#main").innerHTML, view === "activity" ? /O que o evento fez[\s\S]*Encaminhou para análise[\s\S]*Análise atual[\s\S]*Concluída/ : /Simulado/);
     assert.equal(app.state.deliveries[0].scan_status, "completed");
     assert.equal(app.calls.some(call => call.path === "/api/deliveries"), true);
   }
@@ -521,6 +521,22 @@ test("dirty branch polling preserves the draft while refreshing dashboard and sc
   assert.match(app.nodes.get("#main").innerHTML, /A incluir ao salvar/);
   assert.ok(app.calls.some(call => call.path.startsWith("/api/scans?")));
   assert.equal(app.calls.some(call => call.path === "/api/installations"), false);
+});
+
+test("manual branch refresh keeps a dirty draft and shows its error beside the refresh action", async () => {
+  const { app, branches } = branchPollHarness();
+  app.state.selected.add("draft");
+  app.nodes.set("#main", { contains() { return true; } });
+  app.document.activeElement = { id: "refresh", dataset: { action: "refresh" } };
+  app.nodes.set("#branch-refresh-error", { hidden: true, textContent: "" });
+  await app.refresh();
+  assert.equal(app.state.selected.has("draft"), true);
+  assert.equal(app.state.branches, branches);
+  assert.equal(app.calls.length, 0);
+  assert.equal(app.nodes.get("#branch-refresh-error").hidden, false);
+  assert.match(app.nodes.get("#branch-refresh-error").textContent, /Salve ou descarte/);
+  const html = app.branches();
+  assert.match(html, /class="branch-refresh-action">[\s\S]*Atualizar lista[\s\S]*id="branch-refresh-error" class="form-error" role="alert">Salve ou descarte/);
 });
 
 test("mobile rules enlarge targets and keep report IDs readable without suppressing keyboard control focus", async () => {

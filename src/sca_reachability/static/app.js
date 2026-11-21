@@ -7,7 +7,7 @@ const state = {
   branches: [], selected: new Set(), scans: [], deliveries: [],
   filter: "", statusFilter: "all", busy: false, operation: null, epoch: 0, detailEpoch: 0,
   lastUpdated: null, timer: null, noticeTimer: null, detailTimer: null,
-  selectionError: "", saveError: "", connectionNotice: false,
+  selectionError: "", saveError: "", branchRefreshError: "", connectionNotice: false,
   simulationScope: null, simulationTarget: null,
 };
 const MAX_BRANCHES = 20;
@@ -224,7 +224,7 @@ function simulationControls() {
 function branches() {
   const dirty = isDirty(state.branches, state.selected);
   return `${pageHeading("02", 'Escolha o que<br><span class="accent">merece atenção.</span>', "Selecione as branches que devem iniciar uma análise quando novos commits chegarem pelo GitHub.")}
-    <div class="toolbar"><div class="actions">${scopeControls()}</div><div class="actions">${!demo() && state.meta.github_configured ? button("Sincronizar com GitHub", "sync", "", state.busy) : ""}${button("Atualizar lista", "refresh", "", state.busy)}</div></div>
+    <div class="toolbar"><div class="actions">${scopeControls()}</div><div class="actions">${!demo() && state.meta.github_configured ? button("Sincronizar com GitHub", "sync", "", state.busy) : ""}<div class="branch-refresh-action">${button("Atualizar lista", "refresh", "", state.busy)}<span id="branch-refresh-error" class="form-error" role="alert">${e(state.branchRefreshError)}</span></div></div></div>
     ${scopeEmpty() || `<div class="branch-layout"><section><div class="section-heading"><div><span class="eyebrow">ESCOPO DO MONITORAMENTO</span><h2>Branches de ${e(repo()?.full_name?.split("/").pop() || "repositório")}</h2></div></div>
       <label class="field" for="branch-search">Buscar branch<input id="branch-search" type="search" placeholder="Filtrar pelo nome…" value="${e(state.filter)}" autocomplete="off"></label>
       <div class="actions spaced">${button("Selecionar filtradas", "select-filtered", "quiet", state.busy)}${button("Limpar seleção", "clear-selection", "quiet", state.busy || !state.selected.size)}</div><p class="secondary small">Selecionar filtradas inclui apenas as branches deste repositório que correspondem à busca, até 20 no total. Limpar seleção desmarca todas deste repositório, inclusive as ocultas pelo filtro.</p>
@@ -252,11 +252,11 @@ function results() {
 }
 function activity() {
   return `${pageHeading("04", 'A história começa<br><span class="accent">em um evento.</span>', "Confira os eventos recebidos pelo serviço e acompanhe o que entrou no fluxo de monitoramento.", `<div class="actions">${button("Atualizar", "refresh", "", state.busy)}</div>`)}
-    ${state.deliveries.length ? `<div class="table-wrap responsive-table"><table role="table"><thead><tr><th scope="col">Evento</th><th scope="col">Repositório / branch</th><th scope="col">Resultado do evento / análise atual</th><th scope="col">Recebido em</th></tr></thead><tbody>${state.deliveries.map(delivery => `<tr><td data-label="Evento"><strong>${e(delivery.event)}</strong><span class="secondary mono">${e(delivery.delivery_id)}</span></td><td data-label="Repositório / branch"><span class="break">${e(delivery.repository || "—")}</span><span class="secondary mono">${e(delivery.branch || "—")}</span></td><td data-label="Resultado do evento / análise atual">${badge(deliveryLabel(delivery.status), delivery.status === "failed" ? "failed" : "muted")}${delivery.scan_id ? `<span class="secondary">Análise: ${e(scanLabel(delivery.scan_status))}</span>${button("Ver análise →", "detail", "text-button", false, `data-id="${e(delivery.scan_id)}"`)}` : ""}</td><td data-label="Recebido em">${e(formatDate(delivery.received_at))}</td></tr>`).join("")}</tbody></table></div>` : empty("Nenhum evento recebido ainda.", demo() ? "Selecione uma branch e use a simulação de push para explorar o fluxo de demonstração." : "Após configurar o webhook do GitHub App, os eventos recebidos aparecerão aqui.")}
+    ${state.deliveries.length ? `<div class="table-wrap responsive-table"><table role="table"><thead><tr><th scope="col">Evento</th><th scope="col">Repositório / branch</th><th scope="col">Resultado do evento / análise atual</th><th scope="col">Recebido em</th></tr></thead><tbody>${state.deliveries.map(delivery => `<tr><td data-label="Evento"><strong>${e(delivery.event)}</strong><span class="secondary mono">${e(delivery.delivery_id)}</span></td><td data-label="Repositório / branch"><span class="break">${e(delivery.repository || "—")}</span><span class="secondary mono">${e(delivery.branch || "—")}</span></td><td data-label="Resultado do evento / análise atual"><div class="activity-status-group"><span class="eyebrow">O que o evento fez</span>${badge(deliveryLabel(delivery.status), delivery.status === "failed" ? "failed" : "muted")}</div>${delivery.scan_id ? `<div class="activity-status-group"><span class="eyebrow">Análise atual</span><span class="secondary">${e(scanLabel(delivery.scan_status))}</span>${button("Ver análise →", "detail", "text-button", false, `data-id="${e(delivery.scan_id)}"`)}</div>` : ""}</td><td data-label="Recebido em">${e(formatDate(delivery.received_at))}</td></tr>`).join("")}</tbody></table></div>` : empty("Nenhum evento recebido ainda.", demo() ? "Selecione uma branch e use a simulação de push para explorar o fluxo de demonstração." : "Após configurar o webhook do GitHub App, os eventos recebidos aparecerão aqui.")}
     <div class="note spaced">${demo() ? "Eventos sintéticos, gerados no ambiente de demonstração. Nenhum webhook real é representado." : "Um evento recebido não significa uma análise concluída. Consulte o estado da execução em Análises."}</div>`;
 }
 function deliveryLabel(status) {
-  return ({ accepted: "Aceito", queued: "Análise enfileirada", processed: "Processado", ignored: "Ignorado", failed: "Falhou", rejected: "Rejeitado", duplicate: "Duplicado", completed: "Concluído", received: "Recebido" })[status] || "Estado não reconhecido";
+  return ({ accepted: "Aceito", queued: "Encaminhou para análise", processed: "Processado", ignored: "Ignorado", failed: "Falhou", rejected: "Rejeitado", duplicate: "Duplicado", completed: "Concluído", received: "Recebido" })[status] || "Estado não reconhecido";
 }
 
 function renderView() {
@@ -306,8 +306,15 @@ async function loadScoped(epoch) {
 async function refresh({ full = true, silent = false } = {}) {
   if (state.busy || !state.authenticated) return;
   if (full && isDirty(state.branches, state.selected)) {
-    notice("Salve ou descarte suas alterações antes de atualizar a lista.", true); return;
+    const message = "Salve ou descarte as alterações antes de atualizar a lista.";
+    if (state.view === "branches") {
+      state.branchRefreshError = message;
+      const inline = $("#branch-refresh-error");
+      if (inline) { inline.textContent = message; inline.hidden = false; }
+    }
+    notice(message, true); return;
   }
+  state.branchRefreshError = "";
   const epoch = ++state.epoch;
   const focused = captureFocus();
   if (!silent) { state.busy = true; renderView(); }
