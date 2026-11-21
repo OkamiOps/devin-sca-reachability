@@ -13,6 +13,20 @@ CREATE TABLE IF NOT EXISTS installations (
     status TEXT NOT NULL CHECK (status IN ('active', 'suspended', 'deleted')),
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS public_registration_attempts (
+    session_hash TEXT NOT NULL,
+    attempted_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scan_progress (
+    scan_id TEXT PRIMARY KEY REFERENCES scans(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL,
+    completed INTEGER,
+    total INTEGER,
+    error_code TEXT,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS repositories (
     installation_id INTEGER NOT NULL,
     id INTEGER NOT NULL,

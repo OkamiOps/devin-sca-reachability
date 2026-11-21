@@ -1,4 +1,4 @@
-import { escapeHTML as e, formatDate, count, scanLabel, reachabilityLabel, isDirty, scopedRepositoryPath, explanationPresentation, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts, supportedMode, githubLink, advisoryURL, findingPage, findingPresentation, scopeCounts, scopeSummary, dependencyPresentation, isTransitiveUnknown, transitiveSteps } from "/model.js";
+import { escapeHTML as e, formatDate, count, scanLabel, reachabilityLabel, isDirty, scopedRepositoryPath, explanationPresentation, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts, supportedMode, githubLink, advisoryURL, findingPage, findingPresentation, scopeCounts, scopeSummary, dependencyPresentation, isTransitiveUnknown, transitiveSteps, validPublicRepository, publicErrorCopy, publicProgress } from "/model.js";
 
 const $ = selector => document.querySelector(selector);
 const state = {
@@ -10,6 +10,7 @@ const state = {
   selectionError: "", saveError: "", branchRefreshError: "", connectionNotice: false,
   simulationScope: null, simulationTarget: null, detailReturn: null,
   reportScan: null, findingFilter: "all", findingPage: 0,
+  publicFlow: { url: "", phase: "idle", registration: null, scan: null, error: null }, publicTimer: null, publicEpoch: 0,
 };
 const MAX_BRANCHES = 20;
 class ApiError extends Error {
@@ -30,6 +31,13 @@ async function api(path, { method = "GET", body } = {}) {
       throw new ApiError(401, "Sua sessão não está ativa. Entre novamente.");
     }
     if (!response.ok) {
+      let payload;
+      try { payload = await response.json(); } catch { payload = {}; }
+      if (typeof payload.code === "string") {
+        const error = new ApiError(response.status, publicErrorCopy(payload.code));
+        error.code = payload.code;
+        throw error;
+      }
       if (response.status === 400) {
         const messages = {
           "Select at most 20 distinct existing branch names.": "Selecione no máximo 20 branches distintas.",
@@ -41,7 +49,7 @@ async function api(path, { method = "GET", body } = {}) {
           "A demo repository and existing branch are required.": "Escolha o repositório de demonstração e uma branch monitorada.",
         };
         let detail;
-        try { detail = (await response.json()).detail; } catch { /* Keep unknown diagnostics private. */ }
+        detail = payload.detail;
         throw new ApiError(400, typeof detail === "string" && Object.hasOwn(messages, detail) ? messages[detail] : "Não foi possível validar a seleção. Confira os dados e tente novamente.");
       }
       // API errors can contain provider diagnostics. Do not echo them into the UI.
@@ -182,6 +190,8 @@ function renderLogin(message = "") {
 }
 
 function endSession() {
+  clearTimeout(state.publicTimer); state.publicEpoch++;
+  state.publicFlow = { url: "", phase: "idle", registration: null, scan: null, error: null };
   clearTimeout(state.detailTimer);
   state.authenticated = false; state.busy = false; state.operation = null; state.epoch++; state.detailEpoch++;
   clearTimeout(state.timer);
@@ -211,6 +221,7 @@ function overview() {
   const latest = state.scans.find(scan => scan.status === "completed");
   const monitored = state.branches.filter(branch => branch.selected).length;
   return `${pageHeading("01", 'Visão geral', "Dependências, branches e evidências. Um lugar para decidir o próximo passo.", button("Atualizar painel", "refresh", "", state.busy))}
+    ${publicRepositoryCard()}
     <div class="section-kicker"><span>VISÃO DO AMBIENTE</span><span>Todas as instalações autorizadas</span></div>
     <div class="stats">${stat("Repositórios", data.repositories, "disponíveis no ambiente")}${stat("Branches monitoradas", data.selected_branches, "seleções salvas")}${stat("Análises registradas", data.scans, demo() ? "execuções sintéticas · histórico" : "execuções do serviço · histórico")}${stat("Achados atuais", data.findings, "última análise concluída por branch", true)}</div>
     <div class="toolbar scope-toolbar"><div class="actions">${scopeControls()}</div><div class="actions">${publicMode() && monitored ? button("Analisar agora →", "scan", "primary", state.busy, `data-branch="${e(state.branches.find(b => b.selected).name)}"`) : ""}<a href="#branches" class="button">Gerenciar monitoramento ↗</a></div></div>
@@ -221,6 +232,70 @@ function overview() {
     <div class="connection"><div class="inline"><h3>Explicações por IA</h3>${badge(state.meta.ai_configured ? "Configurada" : "Desabilitadas", state.meta.ai_configured ? "live" : "muted")}</div><p>Quando disponíveis, ajudam na leitura. Não substituem evidência nem determinam o alcance.</p></div>
     <div class="connection"><span class="eyebrow">ÚLTIMA ANÁLISE</span><p>${e(formatDate(data.last_scan_at))}</p></div></aside></div>
     <div class="trust-note"><span aria-hidden="true">◇</span><p><strong>Evidência, não promessa de segurança.</strong> Sem achados não significa ausência de vulnerabilidades. Alcance desconhecido permanece desconhecido.</p></div>`;
+}
+
+function publicRepositoryCard() {
+  if (!publicMode()) return "";
+  return `<section id="public-repository-card" class="panel public-repository-card" aria-labelledby="public-repository-title">${publicRepositoryContent()}</section>`;
+}
+function publicRepositoryContent() {
+  const flow = state.publicFlow;
+  const waiting = ["checking", "starting", "scanning"].includes(flow.phase);
+  const registered = flow.registration;
+  return `<div class="public-card-intro"><div><span class="eyebrow">GITHUB PÚBLICO · OSV REAL</span><h2 id="public-repository-title">Analisar repositório público</h2><p>Cole um endereço. Escolha a branch. Revise evidências reais, sem executar código.</p></div><span class="public-readonly">↗ Somente leitura</span></div>
+    <form id="public-repository-form" novalidate><label for="public-repository-url">URL do repositório GitHub</label><div class="public-url-row"><input id="public-repository-url" name="repository" type="text" value="${e(flow.url)}" placeholder="https://github.com/owner/repo" autocomplete="off" spellcheck="false" maxlength="600" aria-describedby="public-repository-help public-repository-error" ${waiting ? "disabled" : ""}><button class="primary" type="submit" ${waiting ? "disabled" : ""}>${flow.phase === "checking" ? "Verificando…" : "Verificar →"}</button></div><p id="public-repository-help" class="secondary small">Sem conta GitHub, token pessoal ou instalação de dependências. Também aceita owner/repo e URLs de branch.</p></form>
+    ${flow.error ? `<div id="public-repository-error" class="public-flow-error" role="alert"><strong>Não foi possível concluir</strong><p>${e(publicErrorCopy(flow.error))}</p>${button(flow.error === "network" ? "Tentar novamente" : "Escolher outro repositório", flow.error === "network" ? "public-retry" : "public-reset", "quiet")}</div>` : '<p id="public-repository-error" hidden></p>'}
+    ${registered ? `<div class="public-branch-row"><div><span class="eyebrow">REPOSITÓRIO VERIFICADO</span><h3>${e(registered.repository.full_name)}</h3><span class="secondary small">${registered.branches.length} branches · padrão: ${e(registered.default_branch)}</span></div><label class="field" for="public-repository-branch">Branch<select id="public-repository-branch" ${waiting ? "disabled" : ""}>${registered.branches.map(branch => `<option value="${e(branch)}" ${branch === registered.selected_branch ? "selected" : ""}>${e(branch)}</option>`).join("")}</select></label>${button(flow.phase === "starting" ? "Iniciando…" : "Analisar →", "public-analyze", "primary", waiting || flow.phase === "completed")}</div>` : ""}
+    ${flow.scan ? `<div class="public-progress" aria-live="polite"><div class="section-heading"><h3>${flow.phase === "completed" ? "Relatório pronto para revisão" : flow.phase === "error" ? "Análise interrompida" : "Análise em andamento"}</h3>${badge(flow.scan.status === "queued" ? "Na fila" : scanLabel(flow.scan.status), flow.scan.status)}</div><ol class="public-stage-list">${publicProgress(flow.scan).map((step, i) => `<li class="${step.status}" ${step.status === "active" ? 'aria-current="step"' : ""}><span>${step.status === "done" ? "✓" : String(i + 1).padStart(2, "0")}</span><strong>${e(step.label)}</strong></li>`).join("")}</ol>${flow.scan.progress?.total != null ? `<p class="secondary small">${e(flow.scan.progress.completed ?? 0)} / ${e(flow.scan.progress.total)} · contagem da etapa</p>` : ""}${flow.phase === "completed" ? `<p>${count(flow.scan.finding_count)} achados. Ausência de achados não significa segurança.</p>${button("Abrir relatório real →", "public-report", "primary")}` : '<p class="secondary small">Fontes lidos em memória. Desconhecido nunca significa seguro.</p>'}</div>` : ""}`;
+}
+function paintPublicRepository() {
+  const card = $("#public-repository-card");
+  if (card) card.innerHTML = publicRepositoryContent();
+}
+async function verifyPublicRepository() {
+  const flow = state.publicFlow;
+  const epoch = ++state.publicEpoch;
+  clearTimeout(state.publicTimer);
+  flow.registration = null; flow.scan = null;
+  if (!validPublicRepository(flow.url)) { flow.error = "invalid_url"; flow.phase = "error"; paintPublicRepository(); return; }
+  flow.phase = "checking"; flow.error = null; paintPublicRepository();
+  try {
+    const result = await api("/api/public/repositories", { method: "POST", body: { url: flow.url } });
+    if (epoch !== state.publicEpoch || !state.authenticated) return;
+    flow.registration = result; flow.phase = "ready";
+    state.installation = result.installation_id; state.repository = result.repository.id;
+    await refresh();
+  } catch (error) { if (epoch === state.publicEpoch) { flow.phase = "error"; flow.error = error.code || "network"; } }
+  if (epoch === state.publicEpoch) paintPublicRepository();
+}
+async function analyzePublicRepository(retry = false) {
+  const flow = state.publicFlow, epoch = ++state.publicEpoch;
+  clearTimeout(state.publicTimer);
+  flow.phase = "starting"; flow.error = null; paintPublicRepository();
+  try {
+    if (retry && flow.scan && flow.scan.status !== "failed") {
+      flow.phase = "scanning"; await pollPublicRepository(epoch); return;
+    }
+    const result = retry && flow.scan?.id
+      ? await api(`/api/scans/${encodeURIComponent(flow.scan.id)}/retry`, { method: "POST", body: {} })
+      : await api(`/api/public/repositories/${encodeURIComponent(flow.registration.repository.id)}/scan`, { method: "POST", body: { branch: flow.registration.selected_branch } });
+    if (epoch !== state.publicEpoch || !state.authenticated) return;
+    flow.scan = { id: result.scan_id, status: "queued" }; flow.phase = "scanning";
+    paintPublicRepository(); await pollPublicRepository(epoch);
+  } catch (error) { if (epoch === state.publicEpoch) { flow.error = error.code || "network"; flow.phase = "error"; paintPublicRepository(); } }
+}
+async function pollPublicRepository(epoch) {
+  if (epoch !== state.publicEpoch || !state.authenticated) return;
+  const flow = state.publicFlow;
+  try {
+    const scan = await api(`/api/scans/${encodeURIComponent(flow.scan.id)}`);
+    if (epoch !== state.publicEpoch || !state.authenticated) return;
+    flow.scan = scan;
+    if (scan.status === "completed") { flow.phase = "completed"; await refresh(); }
+    else if (["failed", "cancelled"].includes(scan.status)) { flow.phase = "error"; flow.error = scan.error_code || "analysis_failed"; }
+    else state.publicTimer = setTimeout(() => pollPublicRepository(epoch), 1000);
+  } catch (error) { if (epoch === state.publicEpoch) { flow.phase = "error"; flow.error = error.code || "network"; } }
+  if (epoch === state.publicEpoch) paintPublicRepository();
 }
 
 function scopeControls(includeRepository = true) {
@@ -582,6 +657,7 @@ async function queueScan(branch, simulate = false) {
 }
 
 document.addEventListener("submit", async event => {
+  if (event.target.id === "public-repository-form") { event.preventDefault(); await verifyPublicRepository(); return; }
   if (event.target.id !== "login-form") return;
   event.preventDefault();
   const form = event.target; const submit = form.querySelector('button[type="submit"]');
@@ -604,6 +680,10 @@ document.addEventListener("click", async event => {
   const target = event.target.closest("[data-action]");
   if (!target || target.disabled) return;
   const action = target.dataset.action;
+  if (action === "public-analyze") { await analyzePublicRepository(); return; }
+  if (action === "public-retry") { if (state.publicFlow.scan) await analyzePublicRepository(true); else await verifyPublicRepository(); return; }
+  if (action === "public-reset") { clearTimeout(state.publicTimer); state.publicEpoch++; state.publicFlow = { url: "", phase: "idle", registration: null, scan: null, error: null }; paintPublicRepository(); $("#public-repository-url")?.focus(); return; }
+  if (action === "public-report") { await openDetail(state.publicFlow.scan.id); return; }
   if (action === "skip-main") { event.preventDefault(); $("#main").focus({ preventScroll: true }); }
   else if (action === "demo-login" && demo()) {
     $("#access-token").value = "local-demo";
@@ -655,6 +735,11 @@ document.addEventListener("click", async event => {
 
 document.addEventListener("change", async event => {
   const target = event.target;
+  if (target.id === "public-repository-branch" && state.publicFlow.registration) {
+    state.publicFlow.registration.selected_branch = target.value;
+    state.publicFlow.phase = "ready"; state.publicFlow.scan = null; state.publicFlow.error = null;
+    paintPublicRepository(); $("#public-repository-branch")?.focus();
+  }
   if (target.id === "simulation-branch") {
     const saved = state.branches.find(value => value.name === target.value && value.selected);
     if (saved) {
@@ -709,6 +794,14 @@ document.addEventListener("change", async event => {
 });
 
 document.addEventListener("input", event => {
+  if (event.target.id === "public-repository-url") {
+    state.publicFlow.url = event.target.value; state.publicFlow.registration = null; state.publicFlow.error = null;
+    state.publicFlow.scan = null; state.publicFlow.phase = "idle";
+    clearTimeout(state.publicTimer); state.publicEpoch++;
+    const branch = $("#public-repository-card .public-branch-row"); if (branch) branch.hidden = true;
+    const progress = $("#public-repository-card .public-progress"); if (progress) progress.hidden = true;
+    const error = $("#public-repository-error"); if (error) error.hidden = true;
+  }
   if (event.target.id === "branch-search") { state.filter = event.target.value; $("#branch-list").innerHTML = branchRows(); }
   if (event.target.id === "results-search") {
     state.filter = event.target.value;

@@ -15,7 +15,8 @@ from sca_reachability.explanation import create_provider_from_env
 from sca_reachability.server.config import Settings
 from sca_reachability.server.db import Database, iso_now
 from sca_reachability.server.demo import DEMO_REPOSITORY, seed_demo_catalog, seed_initial_scan
-from sca_reachability.server.errors import ServiceError
+from sca_reachability.server.errors import PublicError, ServiceError
+from sca_reachability.server.public_repositories import PublicRepositories
 from sca_reachability.server.github import DemoGitHubAdapter, GitHubAppClient, SHA_RE
 from sca_reachability.server.public_github import PublicGitHubAdapter
 from sca_reachability.server.osv_client import DemoOsvAdapter, OsvClient
@@ -96,6 +97,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         database.initialize()
+        if settings.mode == 'public':
+            public_repositories.restore()
         provider = None
         if settings.mode == "live":
             provider = ai_provider
@@ -138,6 +141,7 @@ def create_app(
             osv.close()
 
     app = FastAPI(title="SCA Reachability", lifespan=lifespan)
+    public_repositories = PublicRepositories(database, settings, github) if settings.mode == 'public' else None
     app.state.database = database
     app.state.settings = settings
     app.state.ai_configured = False
@@ -149,6 +153,10 @@ def create_app(
     @app.exception_handler(ServiceError)
     async def service_error_handler(request, error: ServiceError):
         return JSONResponse({"detail": error.public_message}, status_code=error.status_code)
+
+    @app.exception_handler(PublicError)
+    async def public_error_handler(request, error):
+        return JSONResponse({'detail': str(error), 'code': error.code}, status_code=error.status)
 
     def operator(request: Request):
         return authenticate_request(request, settings, database)
@@ -203,6 +211,28 @@ def create_app(
         ).fetchall()
         return [{"name": row["name"], "selected": bool(row["selected"])} for row in rows]
 
+    @app.post('/api/public/repositories')
+    async def register_public_repository(request: Request, context=Depends(mutation)):
+        if settings.mode != 'public':
+            raise HTTPException(404, 'Not found')
+        body = await _json_object(request)
+        return await run_in_threadpool(public_repositories.register, body.get('url'), context.session_hash or 'operator-bearer')
+
+    @app.post('/api/public/repositories/{repository_id}/scan', status_code=202)
+    async def scan_public_repository(repository_id: int, request: Request, context=Depends(mutation)):
+        if settings.mode != 'public':
+            raise HTTPException(404, 'Not found')
+        body = await _json_object(request)
+        branch = body.get('branch')
+        if not isinstance(branch, str):
+            raise PublicError('invalid_url', 'Escolha uma branch válida.')
+        with database.transaction() as connection:
+            repository_scope(connection, 9003, repository_id)
+            changed = connection.execute('UPDATE branches SET selected = 1 WHERE installation_id = 9003 AND repository_id = ? AND name = ?', (repository_id, branch))
+            if not changed.rowcount:
+                raise PublicError('invalid_url', 'A branch selecionada não existe.')
+        return await scan(9003, repository_id, request)
+
     @app.get("/api/meta")
     def meta():
         return {
@@ -250,6 +280,8 @@ def create_app(
 
     @app.post("/api/installations/sync", dependencies=[Depends(mutation)])
     def synchronize():
+        if public_repositories is not None:
+            return {'items': public_repositories.sync()}
         return {"items": sync_installations(
             database, settings, github, github_configured=github_configured
         )}
@@ -355,6 +387,8 @@ def create_app(
             commit_sha = await run_in_threadpool(
                 github.resolve_commit_sha, installation_id, repository_id, full_name, branch
             )
+        except PublicError:
+            raise
         except Exception as error:
             raise ServiceError(503, "The selected branch commit could not be resolved.") from error
         if not isinstance(commit_sha, str) or not SHA_RE.fullmatch(commit_sha):
@@ -442,6 +476,9 @@ def create_app(
             if not row:
                 raise HTTPException(404, "Scan not found")
             result = {key: row[key] for key in SCAN_FIELDS}
+            progress = connection.execute('SELECT stage, completed, total, error_code, updated_at FROM scan_progress WHERE scan_id = ?', (scan_id,)).fetchone()
+            result['progress'] = dict(progress) if progress else {'stage': row['status'], 'completed': None, 'total': None}
+            result['error_code'] = progress['error_code'] if progress else None
             result["components"] = [dict(item) for item in connection.execute(
                 """
                 SELECT name, version, ecosystem, purl, manifest_path FROM scan_components
@@ -536,7 +573,7 @@ def create_app(
                 raise HTTPException(409, "Only failed scans can be retried")
             for table in (
                 "scan_components", "scan_findings", "scan_warnings",
-                "scan_demo_sources", "jobs",
+                "scan_demo_sources", "jobs", "scan_progress",
             ):
                 connection.execute(f"DELETE FROM {table} WHERE scan_id = ?", (scan_id,))
             connection.execute(

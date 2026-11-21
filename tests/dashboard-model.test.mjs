@@ -6,6 +6,26 @@ import { readFile } from "node:fs/promises";
 const source = await readFile(new URL("../src/sca_reachability/static/model.js", import.meta.url), "utf8");
 const { escapeHTML, count, isDirty, reachabilityLabel, explanationPresentation, scopedRepositoryPath, formatDate, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 const { supportedMode, githubLink, advisoryURL, findingPage, findingScope, findingPresentation, scopeCounts, scopeSummary, dependencyPresentation, isTransitiveUnknown, transitiveSteps } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const { validPublicRepository, publicErrorCopy, publicProgress } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+
+test("public URL validation and failure copy never imply an empty safe report", () => {
+  for (const value of ["a/b", "a/.github", "https://github.com/a/b.git", "https://github.com/a/b/tree/feature/auth"]) assert.equal(validPublicRepository(value), true);
+  for (const value of [null, "", "a/..", "a-/.github", "a--b/repo", "https://evil.test/a/b", "http://github.com/a/b", "https://github.com/a/b/blob/main/x", "https://github.com/a/b?x", "https://user@github.com/a/b"]) assert.equal(validPublicRepository(value), false);
+  for (const code of ["invalid_url", "private_or_missing", "too_large", "unsupported_no_manifests", "network", "rate_limit", "repository_cap", "__proto__", "constructor", null]) {
+    const copy = publicErrorCopy(code);
+    assert.equal(typeof copy, "string"); assert.ok(copy.length > 20);
+    assert.doesNotMatch(copy, /sem vulnerabilidades|projeto seguro/i);
+  }
+  assert.match(publicErrorCopy("too_large"), /nenhum relatório/i);
+  assert.match(publicErrorCopy("unsupported_no_manifests"), /versões exatas/);
+});
+
+test("public progress uses actual stages and never marks pending or failed scans complete", () => {
+  assert.deepEqual(publicProgress({ status: "queued" }).map(s => s.status), Array(5).fill("pending"));
+  assert.deepEqual(publicProgress({ status: "running", progress: { stage: "osv" } }).map(s => s.status), ["done", "done", "active", "pending", "pending"]);
+  assert.ok(publicProgress({ status: "completed" }).every(s => s.status === "done"));
+  assert.ok(publicProgress({ status: "failed", progress: { stage: "failed" } }).every(s => s.status !== "done"));
+});
 
 test("public is a supported mode, but unknown modes are rejected", () => {
   for (const mode of ["demo", "live", "public"]) assert.equal(supportedMode(mode), true);

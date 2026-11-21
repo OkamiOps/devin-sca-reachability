@@ -49,7 +49,7 @@ def archive(files, link=None):
 class PublicTests(unittest.TestCase):
     def test_config(self):
         s = Settings.from_env({'SCA_MODE': 'public'})
-        self.assertFalse(s.github_configured)
+        self.assertTrue(s.github_configured)
         self.assertIsNone(s.operator_token)
         self.assertIsNone(s.webhook_secret)
         s = Settings.from_env({'SCA_MODE': 'public', 'SCA_PUBLIC_REPOSITORIES': 'Owner/Repo', 'SCA_DASHBOARD_TOKEN': 't'*32})
