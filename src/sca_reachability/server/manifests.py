@@ -32,6 +32,7 @@ class LockedComponent:
     ecosystem: str
     purl: str
     manifest_path: str
+    dev: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,7 @@ def _parse_package_lock(
                 ecosystem="npm",
                 purl=_npm_purl(name, version),
                 manifest_path=manifest_path,
+                dev=package.get("dev") is True,
             )
         )
     return components, warnings

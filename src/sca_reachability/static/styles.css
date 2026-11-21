@@ -3,6 +3,9 @@
 .finding-filters button { min-height: 44px; border-radius: 9px; }
 .finding-filters button[aria-pressed="true"] { background: var(--warm); color: var(--accent); border-color: var(--accent); }
 .finding-filters span { margin-left: 6px; font-variant-numeric: tabular-nums; }
+.scope-summary { font-size: 12px; font-weight: 500; line-height: 1.7; }
+.finding .badge { max-width: 100%; white-space: normal; }
+.analysis-note { padding: 9px 12px; border-left: 2px solid var(--border); border-radius: 4px; background: var(--soft); color: var(--text-muted); line-height: 1.7; }
 .finding-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding-top: 18px; }
 .finding-pagination button, .commit-link { min-height: 44px; min-width: 44px; }
 .commit-link { display: inline-flex; align-items: center; font-size: 11px; }

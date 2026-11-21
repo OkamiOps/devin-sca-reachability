@@ -15,10 +15,10 @@ UNREACHABLE = ReachabilityStatus.UNREACHABLE
 UNKNOWN = ReachabilityStatus.UNKNOWN
 
 
-def run(ecosystem, package, files, symbols=(), gaps=(), manifest_path=None):
+def run(ecosystem, package, files, symbols=(), gaps=(), manifest_path=None, dependency_dev=False):
     coverage = SourceCoverage([SourceFile(path, text) for path, text in files.items()], list(gaps))
     return analyze_package(ecosystem=ecosystem, package=package, coverage=coverage,
-                           symbols=symbols, manifest_path=manifest_path)
+                           symbols=symbols, manifest_path=manifest_path, dependency_dev=dependency_dev)
 
 
 class NpmReachabilityTests(unittest.TestCase):
@@ -67,15 +67,66 @@ class NpmReachabilityTests(unittest.TestCase):
                 self.assertEqual(result.status, UNKNOWN)
                 self.assertIn("Desconhecido não significa seguro", result.reason)
 
-    def test_nodegoat_config_blocks_negative_proof_not_complete_unimported_sources(self):
+    def test_nodegoat_local_config_loads_do_not_block_negative_proof(self):
         config = ('const path = require("path");\n'
                   'const allConf = require(path.resolve(__dirname + "/../config/env/all.js"));\n'
                   'const envConf = require(path.resolve(__dirname + "/../config/env/" + finalEnv.toLowerCase() + ".js")) || {};\n')
         result = run("npm", "grunt", {"config/config.js": config, "main.js": "const x = 1;"})
-        self.assertEqual(result.status, UNKNOWN)
-        self.assertEqual(result.evidence[0].kind, "dynamic")
-        self.assertEqual(result.evidence[0].path, "config/config.js")
+        self.assertEqual(result.status, UNREACHABLE)
+        self.assertEqual(result.evidence, ())
+        self.assertEqual([(note.path, note.line, note.kind) for note in result.notes],
+                         [("config/config.js", 2, "local_load"), ("config/config.js", 3, "local_load")])
+        self.assertIn('path.resolve', result.analysis_dict()['notes'][1]['snippet'])
         self.assertEqual(run("npm", "grunt", {"main.js": "const x = 1;"}).status, UNREACHABLE)
+
+    def test_local_load_prefixes_and_templates_are_recorded(self):
+        expressions = [
+            '"./config/" + name', '"../config/" + name', '"/app/config/" + name',
+            '__dirname + "/config/" + name', '__filename + name', '__dirname',
+            '`./config/${name}.js`', '`../config/${name}`', '`/app/${name}`',
+            '`${__dirname}/config/${name}.js`', '`${__filename}${suffix}`',
+            'path.resolve(__dirname, name)', 'path.join(__dirname, name)',
+            'path.resolve("./config", name)', 'path.resolve("../config", name)',
+            'path.join("../config", name)', 'path.join("../", name)',
+        ]
+        for expression in expressions:
+            for function in ('require', 'import'):
+                with self.subTest(expression=expression, function=function):
+                    result = run('npm', 'lodash', {'main.js': f'{function}({expression});'})
+                    self.assertEqual(result.status, UNREACHABLE)
+                    self.assertEqual(len(result.notes), 1)
+                    self.assertEqual(result.notes[0].kind, 'local_load')
+
+    def test_dynamic_package_loads_and_unsafe_prefixes_stay_unknown(self):
+        expressions = [
+            'x', '"node_modules/" + x', '"./node_modules/" + x',
+            'path.resolve(x, "./config")', 'path.join(x, "./config")',
+            'path.resolve("node_modules/", x)', 'path.join(__dirname, "node_modules", x)',
+            'path.join("./", x)', 'path.join("./config", x)',
+            '"./" + x ? packageName : other', '"./" + x, packageName',
+            '"./" + x || packageName', '"./" + x - 0 + packageName',
+            'path.join(__dirname + x ? packageName : other, "file")',
+            '"./".replace("./", packageName)', '`${name}/file`',
+            '`${__dirname}/node_modules/${name}`', '`./${require(name)}`',
+        ]
+        for expression in expressions:
+            with self.subTest(expression=expression):
+                result = run('npm', 'lodash', {'main.js': f'require({expression});'})
+                self.assertEqual(result.status, UNKNOWN)
+                self.assertEqual(result.notes, ())
+        self.assertEqual(run('npm', 'lodash', {'main.js': 'require(__dirname'}).status, UNKNOWN)
+
+    def test_local_notes_never_override_gaps_or_package_calls(self):
+        files = {'main.js': 'require("./" + name);\nrequire("lodash").template();'}
+        result = run('npm', 'lodash', files, ['template'])
+        self.assertEqual(result.status, REACHABLE)
+        self.assertEqual(result.evidence[-1].kind, 'call')
+        self.assertEqual(len(result.notes), 1)
+        result = run('npm', 'lodash', {'main.js': 'require("./" + name);'}, gaps=['missing source'])
+        self.assertEqual(result.status, UNKNOWN)
+        self.assertEqual(len(result.notes), 1)
+        self.assertEqual(run('npm', 'lodash', {
+            'main.js': 'require(path.resolve(__dirname, require(name)));'}).status, UNKNOWN)
 
     def test_import_without_call_and_without_symbol_data_is_unknown(self):
         result = run("npm", "lodash", {"a.js": "import 'lodash';\n"})
@@ -88,6 +139,68 @@ class NpmReachabilityTests(unittest.TestCase):
                          UNREACHABLE)
         self.assertEqual(run("npm", "lodash", files, manifest_path="web/package-lock.json").status,
                          REACHABLE)
+
+
+class ReachabilityScopeTests(unittest.TestCase):
+    def test_call_contexts_for_javascript_and_python_do_not_change_classification(self):
+        for ecosystem, package, suffix, code in [
+            ('npm', 'lodash', 'js', 'const p = require("lodash");\np.template();'),
+            ('PyPI', 'PyYAML', 'py', 'import yaml\nyaml.load(data)'),
+        ]:
+            for path, expected in [
+                ('src/app', 'production'), ('config/config', 'production'), ('test/app', 'test_only'),
+                ('tests/app', 'test_only'), ('__tests__/app', 'test_only'),
+                ('spec/app', 'test_only'), ('src/app.test', 'test_only'),
+                ('src/app.spec', 'test_only'), ('scripts/check', 'dev_tooling'),
+                ('build/generate', 'dev_tooling'), ('Gruntfile', 'dev_tooling'),
+                ('gulpfile', 'dev_tooling'), ('webpack.config', 'dev_tooling'),
+                ('build.config', 'dev_tooling'), ('vite.config', 'dev_tooling'),
+            ]:
+                with self.subTest(ecosystem=ecosystem, path=path):
+                    files = {path + '.' + suffix: code}
+                    result = run(ecosystem, package, files)
+                    self.assertEqual(result.status, REACHABLE)
+                    self.assertEqual(result.scope, expected)
+                    dev_result = run(ecosystem, package, files, dependency_dev=True)
+                    self.assertEqual(dev_result.status, result.status)
+                    self.assertEqual(dev_result.evidence, result.evidence)
+                    self.assertEqual(dev_result.scope, 'test_only' if expected == 'test_only' else 'dev_tooling')
+
+    def test_production_calls_win_before_evidence_is_limited(self):
+        for ecosystem, package, suffix, code in [
+            ('npm', 'lodash', 'js', 'const p = require("lodash");\np.template();'),
+            ('PyPI', 'PyYAML', 'py', 'import yaml\nyaml.load(data)'),
+        ]:
+            with self.subTest(ecosystem=ecosystem):
+                files = {f'tests/test{i}.{suffix}': code for i in range(8)}
+                files['src/app.' + suffix] = code
+                result = run(ecosystem, package, files)
+                self.assertEqual(result.scope, 'production')
+                self.assertEqual(result.status, REACHABLE)
+                self.assertEqual(len(result.evidence), 6)
+                self.assertEqual([item.path for item in result.evidence[:2]], ['src/app.' + suffix] * 2)
+                self.assertIn('src/app.' + suffix, result.reason)
+
+    def test_scope_uses_calls_not_an_uncalled_production_import(self):
+        result = run('npm', 'lodash', {
+            'src/app.js': 'import p from "lodash";',
+            'tests/app.js': 'const p = require("lodash");\np.template();'})
+        self.assertEqual(result.status, REACHABLE)
+        self.assertEqual(result.scope, 'test_only')
+        for path in ('test_app.py', 'app_test.py', 'conftest.py'):
+            self.assertEqual(run('PyPI', 'PyYAML', {path: 'import yaml\nyaml.load(data)'}).scope, 'test_only')
+
+    def test_empty_unknown_unreachable_and_parse_errors_keep_classification(self):
+        for files, status in [({}, UNKNOWN), ({'main.js': 'const x = 1;'}, UNREACHABLE),
+                              ({'tests/main.js': 'require(name);'}, UNKNOWN)]:
+            for dev in (False, True):
+                with self.subTest(files=files, dev=dev):
+                    result = run('npm', 'lodash', files, dependency_dev=dev)
+                    self.assertEqual(result.status, status)
+                    self.assertEqual(result.scope, 'dev_tooling' if dev else 'production')
+        result = run('PyPI', 'PyYAML', {'tests/main.py': 'bad syntax :'}, dependency_dev=True)
+        self.assertEqual(result.status, UNKNOWN)
+        self.assertTrue(result.analysis_dict()['dependency_dev'])
 
 
 class PythonReachabilityTests(unittest.TestCase):

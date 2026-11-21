@@ -741,3 +741,39 @@ test("public report keeps only one page and its filters do not change classifica
   await app.events.get("click")({ target: { closest() { return target; } } });
   assert.match(markup(), /Nenhum achado neste filtro/);
 });
+
+test("public report exposes context filters, production ordering and local-load notes outside collapsed evidence", async () => {
+  const findings = [
+    { id: "test", reachability: "reachable", reachability_scope: "test_only", package_name: "test-pkg" },
+    { id: "unknown", reachability: "unknown", reachability_scope: "production", package_name: "uncertain-pkg" },
+    { id: "prod", reachability: "reachable", reachability_scope: "production", package_name: "prod-pkg", reachability_analysis: {
+      notes: [{ kind: "local_load", path: "config/config.js", line: 7, detail: "local file" }],
+    } },
+    { id: "dev", reachability: "reachable", reachability_scope: "dev_tooling", package_name: "dev-pkg", reachability_analysis: { dependency_dev: true } },
+  ];
+  const app = harness(async () => ({ body: { status: "completed", source: "github", repository: "org/repo", commit_sha: "a".repeat(40), findings, components: [] } }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "public" } });
+  await app.openDetail("scan");
+  const markup = () => app.nodes.get("#report-findings").innerHTML;
+  assert.ok(markup().indexOf("prod-pkg") < markup().indexOf("test-pkg"));
+  assert.match(markup(), /1 alcançáveis em produção · 2 só em testes\/ferramentas/);
+  assert.match(markup(), /Alcançável em produção/);
+  assert.match(markup(), /Alcançável só em testes\/ferramentas/);
+  assert.match(markup(), /Lockfile: dependência de desenvolvimento/);
+  assert.ok(markup().indexOf("Nota de análise") < markup().indexOf("<details>"));
+  assert.match(markup(), /blob\/a{40}\/config\/config.js#L7/);
+  for (const [filter, included, excluded] of [
+    ["production", "prod-pkg", "test-pkg"], ["nonproduction", "test-pkg", "prod-pkg"],
+    ["unknown", "uncertain-pkg", "prod-pkg"],
+  ]) {
+    const target = { dataset: { action: "finding-filter", filter } };
+    await app.events.get("click")({ target: { closest() { return target; } } });
+    assert.ok(markup().includes(included));
+    assert.ok(!markup().includes(excluded));
+  }
+  assert.match(markup(), /Desconhecido não significa seguro/);
+  app.state.scans = [{ status: "completed", finding_count: 4, reachability_counts: { reachable: 3, unknown: 1, unreachable: 0 }, reachability_scope_counts: { production: 1, test_only: 1, dev_tooling: 1 } }];
+  app.state.installation = 9003; app.state.repository = 1;
+  app.state.branches = [{ name: "main", selected: true }];
+  assert.match(app.overview(), /1 alcançáveis em produção · 2 só em testes\/ferramentas/);
+});

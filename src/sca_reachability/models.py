@@ -44,10 +44,15 @@ class ReachabilityResult:
     language: str | None = None
     granularity: str | None = None
     symbols: tuple[str, ...] = ()
+    scope: str | None = None
+    dependency_dev: bool = False
+    notes: tuple[ReachabilityEvidence, ...] = ()
 
     def analysis_dict(self) -> dict:
         return {"files_scanned": self.files_scanned, "language": self.language,
-                "granularity": self.granularity, "symbols": list(self.symbols)}
+                "granularity": self.granularity, "symbols": list(self.symbols),
+                "scope": self.scope, "dependency_dev": self.dependency_dev,
+                "notes": [note.to_dict() for note in self.notes]}
 
 
 @dataclass(frozen=True)

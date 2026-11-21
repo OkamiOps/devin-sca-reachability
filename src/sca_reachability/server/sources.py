@@ -86,6 +86,7 @@ def reachability_for(
                 coverage=coverage,
                 symbols=advisory.symbols,
                 manifest_path=component.manifest_path,
+                dependency_dev=component.dev,
             )
             for advisory in advisories
         ]

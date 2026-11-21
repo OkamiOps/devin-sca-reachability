@@ -34,7 +34,10 @@ export function advisoryURL(id) {
 }
 
 export function findingPage(findings, filter = "all", page = 0, size = 10) {
-  const sorted = sortFindings(findings).filter(f => filter === "all" || reachabilityPresentation(f.reachability).tone === filter);
+  const sorted = sortFindings(findings).filter(f => filter === "all" ||
+    (filter === "production" ? f.reachability === "reachable" && findingScope(f) === "production" :
+      filter === "nonproduction" ? f.reachability === "reachable" && ["test_only", "dev_tooling"].includes(findingScope(f)) :
+        reachabilityPresentation(f.reachability).tone === filter));
   const pages = Math.max(1, Math.ceil(sorted.length / size));
   const current = Math.max(0, Math.min(page, pages - 1));
   return { items: sorted.slice(current * size, (current + 1) * size), total: sorted.length, page: current, pages };
@@ -99,8 +102,37 @@ export function evidenceSteps(evidence) {
     }));
 }
 export function sortFindings(findings) {
+  const order = finding => reachabilityPresentation(finding?.reachability).order * 3 +
+    (finding?.reachability === "reachable" ? findingScope(finding) === "production" ? 0 : findingScope(finding) ? 1 : 2 : 0);
   return (Array.isArray(findings) ? [...findings] : [])
-    .sort((a, b) => reachabilityPresentation(a?.reachability).order - reachabilityPresentation(b?.reachability).order);
+    .sort((a, b) => order(a) - order(b));
+}
+
+export function findingScope(finding) {
+  const scope = finding?.reachability_scope ?? finding?.reachability_analysis?.scope;
+  return ["production", "test_only", "dev_tooling"].includes(scope) ? scope : null;
+}
+
+export function findingPresentation(finding) {
+  const presentation = reachabilityPresentation(finding?.reachability);
+  const scope = findingScope(finding);
+  if (finding?.reachability !== "reachable" || !scope) return presentation;
+  return { ...presentation, label: scope === "production" ? "Alcançável em produção" : "Alcançável só em testes/ferramentas",
+    headline: scope === "production" ? presentation.headline : "Chamada encontrada em contexto de testes ou ferramentas.",
+    caveat: `${presentation.caveat} O contexto é inferido dos caminhos e do lockfile, não de execução em produção.` };
+}
+
+export function scopeCounts(findings) {
+  const counts = { production: 0, test_only: 0, dev_tooling: 0, unreported: 0 };
+  for (const finding of Array.isArray(findings) ? findings : []) {
+    if (finding?.reachability === "reachable") counts[findingScope(finding) || "unreported"] += 1;
+  }
+  return counts;
+}
+
+export function scopeSummary(counts) {
+  if (!counts) return "";
+  return `${count(counts.production)} alcançáveis em produção · ${count((counts.test_only || 0) + (counts.dev_tooling || 0))} só em testes/ferramentas${counts.unreported ? ` · ${count(counts.unreported)} alcançáveis sem contexto informado` : ""}`;
 }
 export function reachabilityCounts(findings) {
   const counts = { reachable: 0, unknown: 0, unreachable: 0 };

@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 // No package.json or build is needed to exercise the browser's pure ES module.
 const source = await readFile(new URL("../src/sca_reachability/static/model.js", import.meta.url), "utf8");
 const { escapeHTML, count, isDirty, reachabilityLabel, explanationPresentation, scopedRepositoryPath, formatDate, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
-const { supportedMode, githubLink, advisoryURL, findingPage } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const { supportedMode, githubLink, advisoryURL, findingPage, findingScope, findingPresentation, scopeCounts, scopeSummary } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 
 test("public is a supported mode, but unknown modes are rejected", () => {
   for (const mode of ["demo", "live", "public"]) assert.equal(supportedMode(mode), true);
@@ -105,4 +105,39 @@ test("findings are ordered reachable, unknown, unreachable and counted without t
   const findings = [{ id: "c", reachability: "unreachable" }, { id: "b", reachability: "unknown" }, { id: "a", reachability: "reachable" }, { id: "d", reachability: "safe" }];
   assert.deepEqual(sortFindings(findings).map(item => item.id), ["a", "b", "d", "c"]);
   assert.deepEqual(reachabilityCounts(findings), { reachable: 1, unknown: 2, unreachable: 1 });
+});
+
+test("reachable context is factual, ordered production-first and filterable without reclassification", () => {
+  const findings = [
+    { id: "test", reachability: "reachable", reachability_scope: "test_only" },
+    { id: "unknown", reachability: "unknown", reachability_scope: "production" },
+    { id: "tool", reachability: "reachable", reachability_scope: "dev_tooling" },
+    { id: "legacy", reachability: "reachable" },
+    { id: "prod", reachability: "reachable", reachability_scope: "production" },
+    { id: "negative", reachability: "unreachable", reachability_scope: "test_only" },
+  ];
+  const original = JSON.stringify(findings);
+  assert.deepEqual(sortFindings(findings).map(f => f.id), ["prod", "test", "tool", "legacy", "unknown", "negative"]);
+  assert.deepEqual(findingPage(findings, "production").items.map(f => f.id), ["prod"]);
+  assert.deepEqual(findingPage(findings, "nonproduction").items.map(f => f.id), ["test", "tool"]);
+  assert.deepEqual(findingPage(findings, "unknown").items.map(f => f.id), ["unknown"]);
+  assert.deepEqual(scopeCounts(findings), { production: 1, test_only: 1, dev_tooling: 1, unreported: 1 });
+  assert.match(scopeSummary(scopeCounts(findings)), /1 alcançáveis em produção · 2 só em testes\/ferramentas · 1 alcançáveis sem contexto informado/);
+  assert.equal(findingPresentation(findings[4]).label, "Alcançável em produção");
+  assert.equal(findingPresentation(findings[0]).label, "Alcançável só em testes/ferramentas");
+  assert.equal(findingPresentation(findings[2]).label, "Alcançável só em testes/ferramentas");
+  assert.equal(findingPresentation(findings[1]).label, "Desconhecido");
+  assert.match(findingPresentation(findings[1]).caveat, /não significa seguro/);
+  assert.equal(JSON.stringify(findings), original);
+});
+
+test("empty and malformed scopes never invent production reachability", () => {
+  assert.deepEqual(scopeCounts(null), { production: 0, test_only: 0, dev_tooling: 0, unreported: 0 });
+  assert.equal(scopeSummary(null), "");
+  assert.equal(findingScope({ reachability_scope: "__proto__" }), null);
+  assert.equal(findingScope(null), null);
+  assert.equal(findingScope({ reachability_analysis: { scope: "production" } }), "production");
+  assert.equal(findingPresentation({ reachability: "safe", reachability_scope: "production" }).tone, "unknown");
+  assert.equal(findingPage([], "nonproduction").total, 0);
+  assert.equal(findingPage([{ reachability: "reachable" }], "production").total, 0);
 });

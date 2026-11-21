@@ -151,6 +151,9 @@ class ServerTests(unittest.TestCase):
         )
         self.assertEqual(initial["reachability_counts"],
                          {"reachable": 1, "unreachable": 1, "unknown": 1})
+        self.assertEqual(initial["reachability_scope_counts"],
+                         {"production": 1, "test_only": 0, "dev_tooling": 0, "unreported": 0})
+        self.assertEqual(by_advisory['DEMO-0001']['reachability_scope'], 'production')
         reachable = by_advisory["DEMO-0001"]["reachability_evidence"]
         self.assertEqual([(item["path"], item["line"], item["kind"]) for item in reachable],
                          [("src/server.js", 2, "import"), ("src/server.js", 7, "call")])
@@ -931,6 +934,20 @@ class ServerTests(unittest.TestCase):
 
 @unittest.skipUnless(SERVER_AVAILABLE, "install the optional server extra")
 class MetadataTests(unittest.TestCase):
+    def test_lockfile_development_flag_is_an_exact_boolean(self):
+        for lock_version in (2, 3):
+            components, warnings = _parse_package_lock(json.dumps({
+                'lockfileVersion': lock_version, 'packages': {
+                    '': {}, 'node_modules/dev': {'version': '1.0.0', 'dev': True},
+                    'node_modules/prod': {'version': '1.0.0'},
+                    'node_modules/not-dev': {'version': '1.0.0', 'dev': 'true'},
+                },
+            }).encode(), 'package-lock.json')
+            self.assertFalse(warnings)
+            self.assertEqual({item.name: item.dev for item in components},
+                             {'dev': True, 'not-dev': False, 'prod': False})
+        self.assertFalse(_parse_requirements(b'PyYAML==5.3', 'requirements.txt')[0][0].dev)
+
     def test_npm_v2_v3_scoped_transitive_and_unsupported_versions(self):
         for version in (2, 3):
             components, warnings = _parse_package_lock(json.dumps({

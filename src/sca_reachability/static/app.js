@@ -1,4 +1,4 @@
-import { escapeHTML as e, formatDate, count, scanLabel, reachabilityLabel, isDirty, scopedRepositoryPath, explanationPresentation, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts, supportedMode, githubLink, advisoryURL, findingPage } from "/model.js";
+import { escapeHTML as e, formatDate, count, scanLabel, reachabilityLabel, isDirty, scopedRepositoryPath, explanationPresentation, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts, supportedMode, githubLink, advisoryURL, findingPage, findingPresentation, scopeCounts, scopeSummary } from "/model.js";
 
 const $ = selector => document.querySelector(selector);
 const state = {
@@ -71,8 +71,9 @@ function reachSentence(scan) {
   const counts = scan.reachability_counts;
   if (!counts) return "Alcance não informado; trate como desconhecido.";
   const parts = [["reachable", "alcançável", "alcançáveis"], ["unknown", "desconhecido", "desconhecidos"], ["unreachable", "inalcançável", "inalcançáveis"]]
-    .filter(([key]) => counts[key] > 0)
+    .filter(([key]) => counts[key] > 0 && !(key === "reachable" && scan.reachability_scope_counts))
     .map(([key, one, many]) => `${counts[key]} ${counts[key] === 1 ? one : many}`);
+  if (scan.reachability_scope_counts) parts.unshift(scopeSummary(scan.reachability_scope_counts));
   return parts.length ? `Alcance estático: ${parts.join(" · ")}.` : "Alcance não informado; trate como desconhecido.";
 }
 
@@ -419,7 +420,7 @@ function findingInstructions(finding, scan) {
   const version = versions.length ? versions.join(" ou ") : "(sem versão corrigida informada)";
   const manifests = findingManifests(finding, scan).join(", ") || "manifesto não informado";
   const lead = ({
-    reachable: "Prioridade: o código chama o alvo do aviso.",
+    reachable: `Prioridade: ${findingPresentation(finding).label.toLowerCase()}. O código chama o alvo do aviso neste contexto.`,
     unreachable: "Nenhuma chamada encontrada, mas a dependência continua vulnerável.",
   })[finding.reachability] || "Alcance desconhecido: revise manualmente os pontos indicados e trate como potencialmente alcançável.";
   return `${lead} Atualize ${finding.package_name || "o componente"} para ${version} em ${manifests}, teste e execute nova análise.`;
@@ -439,9 +440,11 @@ function findingMarkup(finding, scan) {
   const paths = findingManifests(finding, scan);
   const manifests = paths.length ? paths.map(path => manifestLink(path, scan)).join(", ") : "manifesto não informado";
   const instructions = findingInstructions(finding, scan);
-  const reach = reachabilityPresentation(finding.reachability);
+  const reach = findingPresentation(finding);
   const steps = evidenceSteps(finding.reachability_evidence);
   const analysis = finding.reachability_analysis && typeof finding.reachability_analysis === "object" ? finding.reachability_analysis : {};
+  const notes = evidenceSteps(analysis.notes);
+  const contextNote = `${analysis.dependency_dev ? '<p class="secondary small">Lockfile: dependência de desenvolvimento (<code>dev: true</code>).</p>' : ''}${notes.length ? `<p class="analysis-note small"><strong>Nota de análise · cargas locais</strong><br>${notes.map(note => manifestLink(note.path, scan, note.line)).join(" · ")}<br>Caminhos locais reconhecidos, não cargas de pacotes. Os arquivos locais são analisados dentro da cobertura registrada.</p>` : ''}`;
   const symbols = Array.isArray(analysis.symbols) ? analysis.symbols.filter(symbol => typeof symbol === "string") : [];
   const method = typeof analysis.language === "string" && Number.isInteger(analysis.files_scanned)
     ? `Análise estática de ${e(analysis.language)} em ${count(analysis.files_scanned)} ${analysis.files_scanned === 1 ? "arquivo" : "arquivos"}, ${symbols.length ? `procurando chamadas a <span class="mono">${symbols.map(e).join(", ")}</span>` : "no nível do pacote, porque o aviso não identifica a função vulnerável"}. O código monitorado foi apenas lido, nunca executado.`
@@ -451,7 +454,7 @@ function findingMarkup(finding, scan) {
     : `<p class="secondary">Nenhum trecho de código foi registrado como evidência${finding.reachability === "unreachable" ? ": o pacote não é importado nos arquivos analisados" : ""}.</p>`;
   return `<article class="finding"><div class="section-heading"><h3>${publicMode() ? advisoryLink(finding.advisory_id || finding.id) : e(finding.advisory_id || finding.id)}</h3>${badge(reach.label, reach.tone, true)}</div><p><strong>${e(finding.package_name)}</strong> <span class="mono secondary">${e(finding.version)}</span> <span class="secondary">· Severidade: ${severity}</span></p><p class="secondary">${e(finding.summary || "O aviso não inclui um resumo.")}</p>
     <div class="reach-callout ${reach.tone}"><span class="eyebrow">ALCANCE ESTÁTICO · ${e(reach.label.toUpperCase())}</span><strong>${e(reach.headline)}</strong><p>${e(finding.reachability_reason || reach.caveat)}</p>${finding.reachability_reason && !finding.reachability_reason.includes(reach.caveat.split(".")[0]) ? `<p class="small">${e(reach.caveat)}</p>` : ""}</div>
-    <details open><summary>Ver evidências e limites</summary><div class="evidence"><h4>Por que este achado apareceu?</h4><p><span class="mono">${e(finding.package_name)}@${e(finding.version)}</span> encontrado em ${manifests} no commit <span class="mono">${e(scan.commit_sha?.slice(0, 7) || "não informado")}</span>. ${scan.source === "demo" ? "Correlação sintética por versão exata com o aviso fictício; não houve consulta ao OSV." : "Correspondência com o aviso por versão exata via OSV."}</p><h4>Caminho no código</h4><p class="secondary">${method}</p>${codePath}<dl><dt>Identificador</dt><dd class="mono">${advisoryLink(finding.advisory_id || finding.id)}</dd><dt>Componente</dt><dd class="mono">${e(finding.purl || finding.package_name)}</dd><dt>Ecossistema</dt><dd>${e(finding.ecosystem || "Não informado")}</dd><dt>Correção informada</dt><dd>${e(finding.fixed_versions?.length ? finding.fixed_versions.join(", ") : "Nenhuma versão informada nos dados")}</dd><dt>Alcance</dt><dd>${e(reach.label)}. ${e(reach.caveat)}</dd></dl></div></details>
+    ${contextNote}<details open><summary>Ver evidências e limites</summary><div class="evidence"><h4>Por que este achado apareceu?</h4><p><span class="mono">${e(finding.package_name)}@${e(finding.version)}</span> encontrado em ${manifests} no commit <span class="mono">${e(scan.commit_sha?.slice(0, 7) || "não informado")}</span>. ${scan.source === "demo" ? "Correlação sintética por versão exata com o aviso fictício; não houve consulta ao OSV." : "Correspondência com o aviso por versão exata via OSV."}</p><h4>Caminho no código</h4><p class="secondary">${method}</p>${codePath}<dl><dt>Identificador</dt><dd class="mono">${advisoryLink(finding.advisory_id || finding.id)}</dd><dt>Componente</dt><dd class="mono">${e(finding.purl || finding.package_name)}</dd><dt>Ecossistema</dt><dd>${e(finding.ecosystem || "Não informado")}</dd><dt>Correção informada</dt><dd>${e(finding.fixed_versions?.length ? finding.fixed_versions.join(", ") : "Nenhuma versão informada nos dados")}</dd><dt>Alcance</dt><dd>${e(reach.label)}. ${e(reach.caveat)}</dd></dl></div></details>
     <section class="next-step"><h4>Próximo passo</h4><p>${e(instructions)}</p>${button("Copiar instruções", "copy-instructions", "quiet", false, `data-instructions="${e(instructions)}"`)}</section></article>`;
 }
 function renderReportFindings() {
@@ -460,10 +463,12 @@ function renderReportFindings() {
   if (!section || !scan || scan.status !== "completed") return;
   if (!publicMode()) return;
   const counts = reachabilityCounts(scan.findings);
+  const scopes = scopeCounts(scan.findings);
+  const filters = { all: ["Todos", scan.findings.length], reachable: ["Alcançáveis", counts.reachable], production: ["Em produção", scopes.production], nonproduction: ["Testes/ferramentas", scopes.test_only + scopes.dev_tooling], unknown: ["Desconhecidos", counts.unknown], unreachable: ["Inalcançáveis", counts.unreachable] };
   const page = findingPage(scan.findings, state.findingFilter, state.findingPage);
   state.findingPage = page.page;
-  section.innerHTML = `<span class="eyebrow">01 / TRIAGEM DOS ACHADOS</span><h3>Priorize com evidências.</h3><p class="secondary">Alcançáveis primeiro. Desconhecido exige revisão — nunca significa seguro.</p>
-    <div class="finding-filters" role="group" aria-label="Filtrar alcance">${["all", "reachable", "unknown", "unreachable"].map(key => `<button type="button" data-action="finding-filter" data-filter="${key}" aria-pressed="${state.findingFilter === key}">${key === "all" ? "Todos" : e(reachabilityPresentation(key).label)} <span>${count(key === "all" ? scan.findings.length : counts[key])}</span></button>`).join("")}</div>
+  section.innerHTML = `<span class="eyebrow">01 / TRIAGEM DOS ACHADOS</span><h3>Priorize com evidências.</h3><p class="secondary">Alcançáveis em produção primeiro. Desconhecido exige revisão — nunca significa seguro.</p><p class="scope-summary">${e(scopeSummary(scopes))}</p>
+    <div class="finding-filters" role="group" aria-label="Filtrar alcance e contexto">${Object.entries(filters).map(([key, [label, total]]) => `<button type="button" data-action="finding-filter" data-filter="${key}" aria-pressed="${state.findingFilter === key}">${e(label)} <span>${count(total)}</span></button>`).join("")}</div>
     <p class="secondary small" role="status">${page.total ? `${count(page.page * 10 + 1)}–${count(Math.min((page.page + 1) * 10, page.total))} de ${count(page.total)} achados` : "Nenhum achado neste filtro."} · ordem por alcance</p>
     ${page.items.map(f => findingMarkup(f, scan).replace('<details open>', '<details>')).join("")}
     <div class="finding-pagination">${button("← Anterior", "finding-prev", "quiet", page.page === 0)}<span class="secondary small">Página ${page.page + 1} de ${page.pages}</span>${button("Próxima →", "finding-next", "quiet", page.page + 1 === page.pages)}</div>`;
@@ -508,6 +513,7 @@ async function openDetail(id, polling = false, origin = null) {
     <div class="dialog-meta"><span class="break">${e(scan.repository)} <span aria-hidden="true">/</span> ${e(scan.branch)}</span><span class="mono id-chip" title="${e(scan.commit_sha || "não informado")}">${publicMode() ? commitMarkup(scan) : `Commit ${e(scan.commit_sha || "não informado")}`}</span><span>${e(formatDate(scan.completed_at || scan.created_at))}</span></div>
       <nav class="report-nav" aria-label="Seções do relatório"><button type="button" data-action="report-section" data-section="report-findings">Achados <span>${count(findings.length)}</span></button><button type="button" data-action="report-section" data-section="report-explanation">${explanation.ai ? "Leitura por IA" : "Resumo local"}</button><button type="button" data-action="report-section" data-section="report-components">Componentes <span>${count(components.length)}</span></button><button type="button" data-action="report-section" data-section="report-limits">Limites e origem</button></nav>
       ${scan.status === "completed" ? `<div class="report-summary"><div><span>Achados técnicos</span><strong>${count(findings.length)}</strong></div><div><span>Componentes</span><strong>${count(components.length)}</strong></div><div class="reach-summary"><span>Alcance estático</span><div class="reach-counts">${["reachable", "unknown", "unreachable"].map(key => `<b class="reach-count ${key}"><i aria-hidden="true"></i>${count(reachCounts[key])}<small>${e(reachabilityPresentation(key).label)}</small></b>`).join("")}</div></div></div>` : ""}
+      ${scan.status === "completed" ? `<p class="scope-summary">${e(scopeSummary(scopeCounts(findings)))}</p>` : ""}
       <div id="report-limits" class="report-anchor" tabindex="-1">${scan.source === "demo" ? '<p class="note">Este relatório é sintético. Não representa o estado de segurança de um projeto real.</p>' : ""}${demoSourceMarkup(scan)}
       ${scan.status === "failed" ? `<p class="note form-error">A análise falhou e não produziu resultados. Nenhuma conclusão de segurança pode ser extraída.</p><p>Você pode tentar novamente com a mesma branch e o mesmo commit, se a branch continuar monitorada.</p>${button("Tentar novamente", "retry-scan", "quiet", false, `data-id="${e(id)}"`)}<p id="detail-action-error" class="form-error" role="alert"></p>` : ""}
       ${pending ? `<p class="note">Resultados ainda não calculados. Acompanhando automaticamente. ${button("Atualizar agora", "detail", "text-button", false, `data-id="${e(id)}"`)}</p>` : ""}

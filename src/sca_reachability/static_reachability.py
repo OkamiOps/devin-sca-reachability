@@ -82,6 +82,7 @@ class _FileFacts:
     imports: list[ReachabilityEvidence] = field(default_factory=list)
     calls: list[ReachabilityEvidence] = field(default_factory=list)
     uncertain: list[ReachabilityEvidence] = field(default_factory=list)
+    notes: list[ReachabilityEvidence] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------- Python
@@ -226,8 +227,91 @@ _JS_IMPORT = re.compile(
 )
 _JS_REQUIRE = re.compile(
     r"(?:\b(?:const|let|var)\s+(?P<binding>[\w$]+|\{[^}]*\})\s*=\s*)?"
-    r"\b(?P<fn>require|import)\s*\(\s*(?P<arg>[^)]*?)\s*\)"
+    r"\b(?P<fn>require|import)\s*\("
 )
+
+
+def _call_end(masked: str, start: int) -> int | None:
+    depth = 1
+    for index in range(start, len(masked)):
+        if masked[index] == '(':
+            depth += 1
+        elif masked[index] == ')':
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _local_load(expression: str) -> bool:
+    expression = expression.strip()
+    if 'node_modules' in expression or re.search(r'\b(?:require|import)\s*\(', expression):
+        return False
+    masked = _js_mask(expression)
+    depth = 0
+    for character in masked:
+        if character in '([{':
+            depth += 1
+        elif character in ')]}':
+            depth -= 1
+        elif depth == 0 and character in ',?:|&=;-*/%<>^!~':
+            return False
+    path_call = re.fullmatch(r'path\.(resolve|join)\s*\((.*)\)', expression, re.S)
+    if path_call:
+        arguments = path_call[2]
+        depth = 0
+        end = len(arguments)
+        for index, character in enumerate(_js_mask(arguments)):
+            if character in '([{':
+                depth += 1
+            elif character in ')]}':
+                depth -= 1
+            elif depth == 0 and character == ',':
+                end = index
+                break
+        first_arg = arguments[:end].strip()
+        first = re.match(r'''\s*(__dirname|__filename|"[^"\\]*"|'[^'\\]*')\s*(?=\+|$)''', first_arg)
+        if not first:
+            return False
+        if not _local_load(first_arg):
+            return False
+        base = first[1]
+        if base in {'__dirname', '__filename'}:
+            return True
+        base = base[1:-1]
+        if path_call[1] == 'join':
+            return base.startswith('/') or posixpath.normpath(base) == '..' or posixpath.normpath(base).startswith('../')
+        return base.startswith(('./', '../', '/'))
+    if re.match(r'__(?:dirname|filename)\s*(?:\+|$)', expression):
+        return True
+    literal = re.match(r'''(["'])([^"'\\]*)\1\s*(?:\+|$)''', expression, re.S)
+    if literal:
+        return literal[2].startswith(('./', '../', '/'))
+    if expression.startswith('`') and expression.endswith('`') and '\\' not in expression and expression.count('`') == 2:
+        prefix = expression[1:-1].split('${', 1)[0]
+        return prefix.startswith(('./', '../', '/')) or bool(re.match(r'`\$\{__(?:dirname|filename)\}', expression))
+    return False
+
+
+def evidence_scope(path: str) -> str:
+    parts = path.lower().split('/')
+    name = parts[-1]
+    if (any(part in {'test', 'tests', '__tests__', 'spec', 'specs'} for part in parts[:-1])
+            or re.search(r'(?:^|[.-])(?:test|spec)\.', name)
+            or re.fullmatch(r'(?:test_.*|.*_test)\.py', name) or name == 'conftest.py'):
+        return 'test_only'
+    if (any(part in {'build', 'scripts'} for part in parts[:-1])
+            or re.match(r'(?:gruntfile|gulpfile|webpack|build|scripts)(?:[.-]|$)', name)
+            or re.match(r'(?:vite|rollup|babel|jest)\.config\.', name) or name == 'setup.py'):
+        return 'dev_tooling'
+    return 'production'
+
+
+def _context(evidence: Sequence[ReachabilityEvidence], dependency_dev: bool, manifest_path: str | None) -> str:
+    scopes = {evidence_scope(item.path) for item in evidence} or {evidence_scope(manifest_path or '')}
+    if 'production' in scopes and not dependency_dev:
+        return 'production'
+    return 'test_only' if scopes == {'test_only'} else 'dev_tooling'
 
 
 def _js_package_of(spec: str) -> str:
@@ -290,21 +374,25 @@ def _js_facts(source: SourceFile, package: str, symbols: frozenset[str]) -> _Fil
                     source, line, "escape", f"'{spec}' é reexportado para outros módulos"))
 
     for match in _JS_REQUIRE.finditer(masked):
-        arg = match.group("arg")
         line = _line_at(masked, match.start("fn"))
-        literal = re.fullmatch(r"(['\"])\0*\1", arg or "")
+        end = _call_end(masked, match.end())
+        arg = original[match.end():end].strip() if end is not None else ''
+        literal = re.fullmatch(r"(['\"])\0*\1", _js_mask(arg))
         if not literal:
+            if end is not None and _local_load(arg):
+                facts.notes.append(_evidence(source, line, 'local_load',
+                    f"{match.group('fn')}() por caminho local; não é uma carga de pacote. Arquivos locais são analisados dentro da cobertura registrada."))
+                continue
             facts.uncertain.append(_evidence(
                 source, line, "dynamic", f"{match.group('fn')}() com nome não literal"))
             continue
-        start = match.start("arg") + 1
-        spec = original[start:start + len(arg) - 2]
+        spec = arg[1:-1]
         if _js_package_of(spec) != package:
             continue
         facts.imports.append(_evidence(source, line, "import", f"{match.group('fn')}('{spec}')"))
         binding = match.group("binding")
         if not binding:
-            tail = masked[match.end():match.end() + 64]
+            tail = masked[end + 1:end + 65]
             call = re.match(r"\s*(?:\.\s*([\w$]+)\s*)?\(", tail)
             if call and (not symbols or call.group(1) in symbols):
                 facts.calls.append(_evidence(source, line, "call",
@@ -366,6 +454,7 @@ def analyze_package(
     coverage: SourceCoverage,
     symbols: Sequence[str] = (),
     manifest_path: str | None = None,
+    dependency_dev: bool = False,
 ) -> ReachabilityResult:
     """Classify whether project sources import and call a vulnerable package."""
 
@@ -379,11 +468,13 @@ def analyze_package(
         suffixes, language = PYTHON_SUFFIXES, "Python"
     else:
         return ReachabilityResult(ReachabilityStatus.UNKNOWN,
-                                  f"O ecossistema {ecosystem} não tem análise estática suportada.")
+                                  f"O ecossistema {ecosystem} não tem análise estática suportada.",
+                                  scope=_context((), dependency_dev, manifest_path),
+                                  dependency_dev=dependency_dev)
 
     files = [source for source in _scope(coverage.files, manifest_path)
              if source.path.endswith(suffixes)]
-    imports, calls, uncertain, parse_failures = [], [], [], []
+    imports, calls, uncertain, parse_failures, notes = [], [], [], [], []
     for source in files:
         if ecosystem == "PyPI":
             facts = _python_facts(source, package, symbol_set)
@@ -395,11 +486,16 @@ def analyze_package(
         imports += facts.imports
         calls += facts.calls
         uncertain += facts.uncertain
+        notes += facts.notes
 
     scanned = len(files)
     meta = dict(files_scanned=scanned, language=language,
                 granularity="symbol" if symbol_set else "package",
-                symbols=tuple(sorted(symbol_set)))
+                symbols=tuple(sorted(symbol_set)),
+                scope=_context(calls or imports, dependency_dev, manifest_path),
+                dependency_dev=dependency_dev, notes=tuple(notes[:MAX_EVIDENCE]))
+    calls.sort(key=lambda item: evidence_scope(item.path) != 'production')
+    imports.sort(key=lambda item: evidence_scope(item.path) != 'production')
     if calls:
         first_call = calls[0]
         chain = [item for item in imports if item.path == first_call.path][:1] or imports[:1]

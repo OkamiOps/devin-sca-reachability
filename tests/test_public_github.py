@@ -100,7 +100,14 @@ class PublicTests(unittest.TestCase):
             p._download('https://github.com/owner/repo', 2)
 
     def test_worker_public_pipeline(self):
-        snapshot = archive({'root/requirements.txt': b'PyYAML==5.3\n', 'root/main.py': b'import yaml\nyaml.load("hi")\n'})
+        snapshot = archive({
+            'root/requirements.txt': b'PyYAML==5.3\n',
+            'root/main.py': b'import yaml\nyaml.load("hi")\n',
+            'root/package-lock.json': json.dumps({'lockfileVersion': 3, 'packages': {
+                '': {}, 'node_modules/lodash': {'version': '4.17.20', 'dev': True},
+            }}).encode(),
+            'root/main.js': b'const p = require("lodash");\np.template();\nrequire(path.resolve(__dirname + "/config/" + env + ".js"));\n',
+        })
         requests = []
         def handler(request):
             requests.append(str(request.url))
@@ -110,8 +117,13 @@ class PublicTests(unittest.TestCase):
                 self.assertTrue(request.url.path.endswith('a'*40))
                 return httpx.Response(200, content=snapshot)
             if request.url.path == '/v1/querybatch':
-                return httpx.Response(200, json={'results': [{'vulns': [{'id': 'GHSA-test-1234-abcd'}]}]})
-            return httpx.Response(200, json={'affected': [{'package': {'name': 'PyYAML', 'ecosystem': 'PyPI'}, 'ecosystem_specific': {'imports': [{'symbols': ['load']}]}}]})
+                return httpx.Response(200, json={'results': [
+                    {'vulns': [{'id': 'GHSA-test-1234-abcd'}]} for _ in json.loads(request.content)['queries']
+                ]})
+            return httpx.Response(200, json={'affected': [
+                {'package': {'name': 'PyYAML', 'ecosystem': 'PyPI'}, 'ecosystem_specific': {'imports': [{'symbols': ['load']}]}},
+                {'package': {'name': 'lodash', 'ecosystem': 'npm'}, 'ecosystem_specific': {'imports': [{'symbols': ['template']}]}},
+            ]})
         transport = httpx.MockTransport(handler)
         p = PublicGitHubAdapter(('owner/repo',), httpx.Client(transport=transport))
         with tempfile.TemporaryDirectory() as directory:
@@ -132,4 +144,17 @@ class PublicTests(unittest.TestCase):
                 self.assertEqual(result['source'], 'github')
                 self.assertEqual(result['findings'][0]['reachability'], 'reachable')
                 self.assertTrue(result['findings'][0]['reachability_evidence'])
+                findings = {item['package_name']: item for item in result['findings']}
+                self.assertEqual(findings['pyyaml']['reachability_scope'], 'production')
+                self.assertEqual(findings['lodash']['reachability_scope'], 'dev_tooling')
+                self.assertTrue(findings['lodash']['reachability_analysis']['dependency_dev'])
+                self.assertEqual(findings['lodash']['reachability_analysis']['notes'][0]['line'], 3)
+                listed = c.get('/api/scans', headers=headers).json()['items'][0]
+                self.assertEqual(listed['reachability_scope_counts'],
+                                 {'production': 1, 'test_only': 0, 'dev_tooling': 1, 'unreported': 0})
+                with app.state.database.transaction() as connection:
+                    connection.execute("UPDATE scan_findings SET reachability_analysis_json = '{}' WHERE scan_id = ?", (scan,))
+                legacy = c.get('/api/scans/'+scan, headers=headers).json()
+                self.assertTrue(all(item['reachability_scope'] is None for item in legacy['findings']))
+                self.assertEqual(c.get('/api/scans', headers=headers).json()['items'][0]['reachability_scope_counts']['unreported'], 2)
         self.assertFalse(any('api.github.com' in url for url in requests))

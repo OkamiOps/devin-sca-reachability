@@ -60,6 +60,7 @@ try {
   }
   if (process.env.SCA_SCREEN_DIR) {
     await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await until("document.querySelector('.attention-card')?.textContent.includes('alcançáveis em produção')");
     await screenshot("public-desktop-overview");
     await openReport();
     await evaluate("document.querySelector('.finding details').open=true;document.querySelector('.finding').scrollIntoView({block:'start'})");
@@ -86,7 +87,8 @@ try {
     await evaluate("location.hash='results'");
     await until("!!document.querySelector('[data-action=detail]')");
     await evaluate(`[...document.querySelectorAll('[data-action=detail]')].find(n=>n.dataset.id===${JSON.stringify(scanId)}).click()`);
-    await until("document.querySelector('#detail-dialog').open && !!document.querySelector('#detail-title')");
+    await until("document.querySelector('#detail-dialog').open && !!document.querySelector('.finding')");
+    await evaluate("document.querySelector('#detail-dialog').scrollTop=0");
     if (width === 390 && process.env.SCA_SCREEN_DIR) {
       await screenshot("public-mobile-report");
       await evaluate("document.querySelector('.finding details').open=true;document.querySelector('.finding').scrollIntoView({block:'start'})");
