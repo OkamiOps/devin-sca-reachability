@@ -313,10 +313,13 @@ async function refresh({ full = true, silent = false } = {}) {
   if (!silent) { state.busy = true; renderView(); }
   try {
     const pollScope = silent && state.view === "branches" && !isDirty(state.branches, state.selected);
-    const responses = await Promise.all([api("/api/dashboard"), api("/api/deliveries"), ...(full || pollScope ? [loadScoped(epoch)] : scansPath() ? [api(scansPath())] : [])]);
+    const scanPath = !full && !pollScope ? scansPath() : null;
+    const requests = [api("/api/dashboard"), api("/api/deliveries"), scanPath ? api(scanPath) : Promise.resolve(null)];
+    if (full || pollScope) requests.push(loadScoped(epoch));
+    const [dashboard, deliveries, scanResponse] = await Promise.all(requests);
     if (epoch !== state.epoch || !state.authenticated) return;
-    state.dashboard = responses[0]; state.deliveries = items(responses[1]);
-    if (!full && responses[2]) state.scans = items(responses[2]);
+    state.dashboard = dashboard; state.deliveries = items(deliveries);
+    if (scanResponse) state.scans = items(scanResponse);
     state.lastUpdated = new Date().toISOString();
     // Background polling must not destroy focus, search text, or edited branch choices.
     if (!silent) renderView();

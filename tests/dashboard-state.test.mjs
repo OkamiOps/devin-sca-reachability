@@ -473,6 +473,56 @@ test("polling renders overview and activity even when the main content owns focu
   }
 });
 
+function branchPollHarness() {
+  const branches = [{ name: "main", selected: true }, { name: "release", selected: true }, { name: "draft", selected: false }];
+  const scans = [{ id: "fresh-scan", repository: "demo/repo", branch: "main", status: "completed", finding_count: 1 }];
+  const app = harness(path => {
+    if (path === "/api/installations") return { body: { items: [{ id: 9001, account: "demo", status: "active" }] } };
+    if (path === "/api/installations/9001/repositories") return { body: { items: [{ id: 9002, full_name: "demo/repo", default_branch: "main" }] } };
+    if (path.endsWith("/branches")) return { body: { items: branches } };
+    if (path.startsWith("/api/scans?")) return { body: { items: scans } };
+    if (path === "/api/deliveries") return { body: { items: [] } };
+    return { body: {} };
+  });
+  Object.assign(app.state, {
+    authenticated: true, meta: { mode: "demo" }, view: "branches", installation: 9001, repository: 9002,
+    installations: [{ id: 9001, account: "demo", status: "active" }],
+    repositories: [{ id: 9002, full_name: "demo/repo", default_branch: "main" }],
+    branches, selected: new Set(["main", "release"]), scans: [{ id: "old-scan" }],
+  });
+  const selector = { id: "simulation-branch", value: "release" };
+  app.simulationControls();
+  app.nodes.set("#simulation-branch", selector);
+  return { app, branches, scans, selector };
+}
+
+test("clean branch polling consumes the loaded scope without treating it as a scan list", async () => {
+  const { app, scans, selector } = branchPollHarness();
+  app.nodes.set("#notification", { hidden: true });
+  await app.events.get("change")({ target: selector });
+  await app.refresh({ full: false, silent: true });
+  assert.deepEqual(app.state.scans, scans);
+  assert.ok(app.state.lastUpdated);
+  assert.equal(app.nodes.get("#notification").hidden, true);
+  assert.equal(app.state.connectionNotice, false);
+  assert.match(app.nodes.get("#main").innerHTML, /option value="release" selected/);
+  assert.ok(app.calls.some(call => call.path === "/api/installations/9001/repositories/9002/branches"));
+  assert.ok(app.calls.some(call => call.path.startsWith("/api/scans?")));
+});
+
+test("dirty branch polling preserves the draft while refreshing dashboard and scans", async () => {
+  const { app, branches, scans } = branchPollHarness();
+  app.state.selected.add("draft");
+  await app.refresh({ full: false, silent: true });
+  assert.equal(app.state.selected.has("draft"), true);
+  assert.equal(app.state.branches, branches);
+  assert.deepEqual(app.state.scans, scans);
+  assert.ok(app.state.lastUpdated);
+  assert.match(app.nodes.get("#main").innerHTML, /A incluir ao salvar/);
+  assert.ok(app.calls.some(call => call.path.startsWith("/api/scans?")));
+  assert.equal(app.calls.some(call => call.path === "/api/installations"), false);
+});
+
 test("mobile rules enlarge targets and keep report IDs readable without suppressing keyboard control focus", async () => {
   const css = await readFile(new URL("../src/sca_reachability/static/styles.css", import.meta.url), "utf8");
   assert.match(css, /min-width: 44px; min-height: 44px/);
