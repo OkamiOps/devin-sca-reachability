@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from hashlib import sha256
 import hmac
+import ipaddress
 import json
 import logging
 import re
@@ -111,14 +112,91 @@ def _origin_tuple(value: str) -> tuple[str, str] | None:
         return None
 
 
-def demo_login_rejection_headers(settings: Settings, category: str) -> dict[str, str] | None:
+def _diagnostic_authority(value: str) -> tuple[str, int | None] | None:
+    try:
+        parsed = urlsplit("//" + value)
+        if (
+            not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.path or parsed.query or parsed.fragment
+        ):
+            return None
+        return parsed.hostname.lower(), parsed.port
+    except ValueError:
+        return None
+
+
+def _diagnostic_host_kind(
+    authority: tuple[str, int | None] | None, configured_host: str | None
+) -> str:
+    if authority is None:
+        return "other"
+    host = authority[0]
+    if host == configured_host:
+        return "configured"
+    if host.endswith(".devinapps.com"):
+        return "devinapps_subdomain"
+    if host == "devin.ai" or host.endswith(".devin.ai"):
+        return "devin_ai"
+    if host == "localhost":
+        return "localhost_or_loopback"
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return "localhost_or_loopback"
+    except ValueError:
+        pass
+    return "other"
+
+
+def _origin_mismatch_diagnostics(
+    request: Request, expected: tuple[str, str] | None
+) -> str:
+    actual = _origin_tuple(request.headers.get("origin", ""))
+    actual_authority = _diagnostic_authority(actual[1]) if actual else None
+    expected_authority = _diagnostic_authority(expected[1]) if expected else None
+    configured_host = expected_authority[0] if expected_authority else None
+    scheme = actual[0] if actual and actual[0] in {"http", "https"} else "other"
+    scheme_match = bool(actual and expected and actual[0] == expected[0])
+    host_match = bool(
+        actual_authority and expected_authority
+        and actual_authority[0] == expected_authority[0]
+    )
+    port_match = bool(
+        actual_authority and expected_authority
+        and actual_authority[1] == expected_authority[1]
+    )
+    host_kind = _diagnostic_host_kind(actual_authority, configured_host)
+    host_header_kind = _diagnostic_host_kind(
+        _diagnostic_authority(request.headers.get("host", "")), configured_host
+    )
+    fields = (
+        f" scheme_match={str(scheme_match).lower()}"
+        f" host_match={str(host_match).lower()} port_match={str(port_match).lower()}"
+        f" origin_scheme={scheme} origin_host_kind={host_kind}"
+        f" host_header_kind={host_header_kind}"
+    )
+    forwarded = request.headers.get("x-forwarded-host")
+    if forwarded is not None:
+        kind = _diagnostic_host_kind(_diagnostic_authority(forwarded), configured_host)
+        fields += f" x_forwarded_host_kind={kind}"
+    return fields
+
+
+def demo_login_rejection_headers(
+    settings: Settings, category: str, *, mismatch_request: Request | None = None,
+    expected_origin: tuple[str, str] | None = None,
+) -> dict[str, str] | None:
     if settings.mode != "demo":
         return None
     correlation_id = uuid4().hex
+    diagnostics = (
+        _origin_mismatch_diagnostics(mismatch_request, expected_origin)
+        if category == "origin_mismatch" and mismatch_request is not None else ""
+    )
     logger.warning(
-        "demo_login_rejected category=%s correlation_id=%s",
+        "demo_login_rejected category=%s correlation_id=%s%s",
         category,
         correlation_id,
+        diagnostics,
     )
     return {"X-SCA-Diagnostic-ID": correlation_id}
 
@@ -159,7 +237,10 @@ def ensure_same_origin(
         )
     if expected is None or actual != expected:
         headers = (
-            demo_login_rejection_headers(settings, "origin_mismatch")
+            demo_login_rejection_headers(
+                settings, "origin_mismatch", mismatch_request=request,
+                expected_origin=expected,
+            )
             if diagnose_login_rejection else None
         )
         raise HTTPException(
