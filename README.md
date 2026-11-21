@@ -62,7 +62,7 @@ Malformed JSON, unsupported SBOM formats, missing component purl/version, unsupp
 - src/sca_reachability/: input parsing, OSV response adapter, reachability interface/default, pipeline, reporting, and CLI.
 - fixtures/: harmless local CycloneDX and synthetic OSV JSON examples.
 - tests/: standard-library unit and CLI tests.
-- .github/workflows/tests.yml: read-only-permission CI matrix for Python 3.11–3.13.
+- .github/workflows/tests.yml: read-only-permission CI matrix for Python 3.11–3.13 on self-hosted runners (labels from the `CI_RUNS_ON` repository variable, a JSON array, default `["self-hosted"]`); pull requests from forks are skipped.
 
 ## Not implemented yet
 
