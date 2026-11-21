@@ -256,6 +256,7 @@ function deliveryLabel(status) {
 function renderView() {
   if (!state.authenticated) return;
   const focused = captureFocus();
+  const scroll = { left: window.scrollX || 0, top: window.scrollY || 0, branches: $("#branch-list")?.scrollTop || 0 };
   renderEnvironment();
   document.querySelectorAll("[data-view]").forEach(link => {
     if (link.dataset.view === state.view) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
@@ -263,7 +264,15 @@ function renderView() {
   $("#main").setAttribute("aria-busy", String(state.busy));
   const operationLabel = ({ save: "Salvando a seleção de branches…", scan: "Enviando análise para a fila…", sync: "Consultando o inventário do GitHub…" })[state.operation] || "Atualizando dados do serviço…";
   $("#main").innerHTML = `${state.busy ? `<p class="loading-status" role="status">${operationLabel}</p>` : ""}${({ overview, branches, results, activity })[state.view]()}`;
+  readableIdentifiers();
   restoreFocus(focused);
+  if ($("#branch-list")) $("#branch-list").scrollTop = scroll.branches;
+  window.scrollTo({ left: scroll.left, top: scroll.top, behavior: "instant" });
+}
+function readableIdentifiers() {
+  document.querySelectorAll(".finding h3, [data-label='Evento'] .mono").forEach(node => {
+    node.classList.add("id-chip"); node.title = node.textContent;
+  });
 }
 
 function scansPath() {
@@ -297,7 +306,8 @@ async function refresh({ full = true, silent = false } = {}) {
   const focused = captureFocus();
   if (!silent) { state.busy = true; renderView(); }
   try {
-    const responses = await Promise.all([api("/api/dashboard"), api("/api/deliveries"), ...(full ? [loadScoped(epoch)] : scansPath() ? [api(scansPath())] : [])]);
+    const pollScope = silent && state.view === "branches" && !isDirty(state.branches, state.selected);
+    const responses = await Promise.all([api("/api/dashboard"), api("/api/deliveries"), ...(full || pollScope ? [loadScoped(epoch)] : scansPath() ? [api(scansPath())] : [])]);
     if (epoch !== state.epoch || !state.authenticated) return;
     state.dashboard = responses[0]; state.deliveries = items(responses[1]);
     if (!full && responses[2]) state.scans = items(responses[2]);
@@ -310,7 +320,7 @@ async function refresh({ full = true, silent = false } = {}) {
       const updated = $("#last-updated");
       if (updated) updated.textContent = `Última atualização do painel: ${formatDate(state.lastUpdated)}.`;
     }
-    else if (!$("#detail-dialog").open && !$("#main").contains(document.activeElement) && state.view !== "branches") renderView();
+    else renderView();
   } catch (error) {
     if (epoch === state.epoch && state.authenticated) notice(`${error.message}${silent ? " Os dados exibidos podem estar desatualizados." : ""}`, true, error.connection);
   } finally {
@@ -388,7 +398,7 @@ async function openDetail(id, polling = false) {
     const pending = ["queued", "running"].includes(scan.status);
     $("#detail-content").innerHTML = `<div class="dialog-heading"><div><span class="eyebrow">RELATÓRIO DA EXECUÇÃO</span><h2 id="detail-title">${scan.status === "completed" ? findings.length ? `${count(findings.length)} ${findings.length === 1 ? "achado" : "achados"}.` : "Sem achados nos dados." : e(scanLabel(scan.status))}</h2></div>${button("Fechar", "close-detail", "quiet")}</div>
       <div class="inline">${badge(scanLabel(scan.status), scan.status)}${badge(scan.source === "demo" ? "Demonstração · dados fictícios" : scan.source === "github" ? "Origem: GitHub" : "Origem não informada", scan.source === "demo" ? "demo" : "muted")}</div>
-      <div class="dialog-meta"><span class="break">${e(scan.repository)} <span aria-hidden="true">/</span> ${e(scan.branch)}</span><span class="mono">Commit ${e(scan.commit_sha || "não informado")}</span><span>${e(formatDate(scan.completed_at || scan.created_at))}</span></div>
+    <div class="dialog-meta"><span class="break">${e(scan.repository)} <span aria-hidden="true">/</span> ${e(scan.branch)}</span><span class="mono id-chip" title="${e(scan.commit_sha || "não informado")}">Commit ${e(scan.commit_sha || "não informado")}</span><span>${e(formatDate(scan.completed_at || scan.created_at))}</span></div>
       ${scan.source === "demo" ? '<p class="note">Este relatório é sintético. Não representa o estado de segurança de um projeto real.</p>' : ""}
       ${scan.status === "failed" ? `<p class="note form-error">A análise falhou e não produziu resultados. Nenhuma conclusão de segurança pode ser extraída.</p><p>Você pode tentar novamente com a mesma branch e o mesmo commit, se a branch continuar monitorada.</p>${button("Tentar novamente", "retry-scan", "quiet", false, `data-id="${e(id)}"`)}<p id="detail-action-error" class="form-error" role="alert"></p>` : ""}
       ${pending ? `<p class="note">Resultados ainda não calculados. Acompanhando automaticamente. ${button("Atualizar agora", "detail", "text-button", false, `data-id="${e(id)}"`)}</p>` : ""}
@@ -397,6 +407,7 @@ async function openDetail(id, polling = false) {
       <section class="spaced" aria-label="Achados técnicos"><span class="eyebrow">01 / RESULTADO TÉCNICO</span>${findings.length ? findings.map(finding => findingMarkup(finding, scan)).join("") : empty("Nenhum achado disponível.", "Nenhum aviso nos dados analisados. Isso não significa que o projeto está livre de vulnerabilidades.")}</section>
       <section class="explanation"><span class="eyebrow">02 / APOIO À LEITURA</span><div class="inline"><h3>${e(explanation.title)}</h3>${explanation.ai ? badge("IA · conteúdo não verificado", "unknown") : ""}</div>${explanation.note ? `<p class="secondary small">${e(explanation.note)}</p>` : ""}<p>${e(explanation.text)}</p><p class="secondary small">${explanation.ai ? "Texto gerado por IA, não uma evidência técnica. Pode conter erros. " : ""}A explicação não altera os achados nem comprova se um caminho vulnerável é executado.</p></section>
       <details class="spaced"><summary>Componentes analisados (${count(components.length)})</summary><div class="table-wrap spaced"><table><thead><tr><th scope="col">Componente</th><th scope="col">Versão</th><th scope="col">Ecossistema / manifesto</th></tr></thead><tbody>${components.map(component => `<tr><td class="break">${e(component.name)}<span class="secondary mono">${e(component.purl)}</span></td><td class="mono">${e(component.version)}</td><td>${e(component.ecosystem)}<span class="secondary mono">${e(component.manifest_path || "—")}</span></td></tr>`).join("")}</tbody></table></div></details>` : ""}<div class="dialog-footer">${button("Fechar relatório", "close-detail", "quiet")}</div>`;
+    readableIdentifiers();
     $("#detail-announcement").textContent = `Análise: ${scanLabel(scan.status)}.`;
     if (pending) state.detailTimer = setTimeout(() => {
       if (dialog.open && epoch === state.detailEpoch) return openDetail(id, true);

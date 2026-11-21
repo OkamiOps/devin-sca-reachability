@@ -413,6 +413,32 @@ test("a successful later request clears a connection alert", async () => {
   assert.equal(app.nodes.get("#notification").hidden, true);
 });
 
+test("polling renders overview and activity even when the main content owns focus", async () => {
+  for (const view of ["overview", "activity"]) {
+    const app = harness(path => ({ body: path === "/api/deliveries" ? { items: [{ delivery_id: "synthetic", event: "push", status: "queued", scan_id: "scan", scan_status: "completed" }] } : {} }));
+    Object.assign(app.state, { authenticated: true, meta: { mode: "demo" }, view });
+    app.nodes.set("#main", { contains() { return true; }, setAttribute() {}, focus() {} });
+    app.document.activeElement = { id: "main" };
+    await app.refresh({ full: false, silent: true });
+    assert.match(app.nodes.get("#main").innerHTML, view === "activity" ? /Análise enfileirada/ : /Simulado/);
+    assert.equal(app.state.deliveries[0].scan_status, "completed");
+    assert.equal(app.calls.some(call => call.path === "/api/deliveries"), true);
+  }
+});
+
+test("mobile rules enlarge targets and keep report IDs readable without suppressing keyboard control focus", async () => {
+  const css = await readFile(new URL("../src/sca_reachability/static/styles.css", import.meta.url), "utf8");
+  assert.match(css, /min-width: 44px; min-height: 44px/);
+  assert.match(css, /\.branch-row label \{ min-height: 44px/);
+  assert.match(css, /\[tabindex="-1"\]:focus:not\(:focus-visible\)/);
+  assert.match(css, /:focus-visible \{ outline: 2px/);
+  assert.match(css, /\.id-chip[^}]+text-overflow: ellipsis/);
+  const app = harness(() => ({}));
+  app.state.authenticated = true;
+  await app.openDetail("missing");
+  assert.match(app.nodes.get("#detail-content").innerHTML, /class="mono id-chip" title=/);
+});
+
 test("expired session clears private data and releases a pending busy state", async () => {
   const app = harness(() => ({ status: 401 }));
   Object.assign(app.state, { authenticated: true, busy: true, meta: { mode: "live" }, scans: [{ id: "private" }], branches: [{ name: "private", selected: true }] });
