@@ -75,3 +75,13 @@ python -m build
 ```
 
 Testes backend usam banco temporário, adapters fake e httpx.MockTransport; bloqueiam transporte HTTP externo. A demonstração não valida credenciais nem instalação GitHub reais. Limitações deliberadas: dois formatos de manifest, sem análise estática de alcance, sem execução de código, sem publicação de alertas, sem garantias empresariais ou conclusão “seguro”.
+
+## Static reachability
+
+After correlation, the worker reads (never executes, installs, or imports) up to a bounded number of `.js/.jsx/.mjs/.cjs/.ts/.tsx` and `.py` blobs from the scanned commit and runs `sca_reachability.static_reachability`:
+
+- **reachable**: the package is imported and the advisory's vulnerable symbol (OSV `affected_functions`/`imports[].symbols`) is called, or the package is called when the advisory names no symbol.
+- **unreachable**: sources cover the manifest and the package is never imported, or it is imported but the vulnerable symbol is never called. Valid only for that commit and the analyzer's coverage.
+- **unknown**: dynamic `import()`/`require()`/`importlib`/`getattr`, indirect references, parse errors, star imports, or incomplete coverage (limits, symlinks, non-UTF-8, unavailable blobs). Unknown is never presented as safe.
+
+Each finding stores up to 6 evidence items (`path`, `line`, `kind`, `detail`, `snippet`) in `reachability_evidence` plus `reachability_analysis` (files scanned, language, granularity, symbols). Existing databases migrate automatically.

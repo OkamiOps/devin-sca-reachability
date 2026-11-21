@@ -51,3 +51,37 @@ export function explanationPresentation(explanation) {
   if (explanation.source === "ai") return { title: "Explicação gerada por IA", text: explanation.text, ai: true };
   return { title: "Explicação · origem não informada", text: explanation.text, ai: false };
 }
+
+const REACHABILITY = {
+  reachable: { label: "Alcançável", tone: "reachable", order: 0, headline: "O código importa e chama o alvo do aviso.", caveat: "Priorize a correção: existe um caminho estático até o código vulnerável." },
+  unknown: { label: "Desconhecido", tone: "unknown", order: 1, headline: "A análise estática não conseguiu decidir.", caveat: "Desconhecido não significa seguro. Trate como potencialmente alcançável." },
+  unreachable: { label: "Inalcançável", tone: "unreachable", order: 2, headline: "Nenhuma chamada ao alvo foi encontrada neste commit.", caveat: "Não é garantia de segurança: vale apenas para este commit e dentro dos limites da análise." },
+};
+const UNREPORTED = { label: "Não informado", tone: "unknown", order: 1, headline: "O serviço não informou o alcance.", caveat: "Sem classificação, trate como desconhecido; isso não significa seguro." };
+export function reachabilityPresentation(status) {
+  return Object.hasOwn(REACHABILITY, status) ? REACHABILITY[status] : UNREPORTED;
+}
+const EVIDENCE_KINDS = { import: "Importa", call: "Chama", dynamic: "Carga dinâmica", escape: "Uso indireto" };
+export function evidenceSteps(evidence) {
+  return (Array.isArray(evidence) ? evidence : [])
+    .filter(item => item && typeof item.path === "string" && item.path && Number.isInteger(item.line) && item.line > 0)
+    .slice(0, 6)
+    .map(item => ({
+      path: item.path, line: item.line, location: `${item.path}:${item.line}`,
+      kind: Object.hasOwn(EVIDENCE_KINDS, item.kind) ? item.kind : "other",
+      kindLabel: EVIDENCE_KINDS[item.kind] || "Evidência",
+      detail: typeof item.detail === "string" ? item.detail : "",
+      snippet: typeof item.snippet === "string" ? item.snippet : "",
+    }));
+}
+export function sortFindings(findings) {
+  return (Array.isArray(findings) ? [...findings] : [])
+    .sort((a, b) => reachabilityPresentation(a?.reachability).order - reachabilityPresentation(b?.reachability).order);
+}
+export function reachabilityCounts(findings) {
+  const counts = { reachable: 0, unknown: 0, unreachable: 0 };
+  for (const finding of Array.isArray(findings) ? findings : []) {
+    counts[Object.hasOwn(REACHABILITY, finding?.reachability) ? finding.reachability : "unknown"] += 1;
+  }
+  return counts;
+}
