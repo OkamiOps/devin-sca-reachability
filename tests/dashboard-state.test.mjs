@@ -421,7 +421,7 @@ test("manual scan remembers its trigger before the busy render removes focus", a
     }
     return { body: path.startsWith("/api/scans?") ? { items: [] } : { status: "completed" } };
   });
-  Object.assign(app.state, { authenticated: true, view: "branches", installation: 1, repository: 2,
+  Object.assign(app.state, { authenticated: true, meta: { mode: "demo" }, view: "branches", installation: 1, repository: 2,
     branches: [{ name: "main", selected: true }], selected: new Set(["main"]) });
   const trigger = { id: "manual-trigger", dataset: { action: "scan", branch: "main" }, focus(options) { this.focusOptions = options; } };
   app.document.activeElement = trigger;
