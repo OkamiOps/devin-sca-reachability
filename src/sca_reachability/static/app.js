@@ -6,7 +6,7 @@ const state = {
   installations: [], installation: null, repositories: [], repository: null,
   branches: [], selected: new Set(), scans: [], deliveries: [],
   filter: "", statusFilter: "all", busy: false, operation: null, epoch: 0, detailEpoch: 0,
-  lastUpdated: null, timer: null, noticeTimer: null,
+  lastUpdated: null, timer: null, noticeTimer: null, detailTimer: null,
 };
 class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -65,6 +65,10 @@ function notice(message, error = false) {
   if (!error) state.noticeTimer = setTimeout(() => { node.hidden = true; }, 8000);
 }
 function clearNotice() { $("#notification").hidden = true; }
+function focusMain() {
+  $("#main").focus({ preventScroll: true });
+  window.scrollTo({ top: 0, behavior: "instant" });
+}
 function empty(title, text, action = "") {
   return `<div class="empty"><h3>${e(title)}</h3><p>${e(text)}</p>${action}</div>`;
 }
@@ -72,7 +76,8 @@ function button(text, action, style = "", disabled = false, attributes = "") {
   return `<button type="button" class="${style}" data-action="${action}" ${disabled ? "disabled" : ""} ${attributes}>${e(text)}</button>`;
 }
 function pageHeading(number, title, description, aside = "") {
-  return `<div class="page-heading"><div><span class="eyebrow">${number} / MONITORAMENTO CONTÍNUO</span><h1>${title}</h1><p>${e(description)}</p></div>${aside}</div>`;
+  const names = { "01": "Visão geral", "02": "Branches monitoradas", "03": "Análises", "04": "Atividade" };
+  return `<div class="page-heading"><div><span class="eyebrow">${number} / ${names[number]}</span><h1><span class="sr-only">${names[number]}: </span>${title}</h1><p>${e(description)}</p></div>${aside}</div>`;
 }
 function renderEnvironment() {
   if (!state.meta) return;
@@ -91,16 +96,17 @@ function renderLogin(message = "") {
       <div class="flow spaced"><span class="flow-number">01</span><div><h3>Escolha o que acompanhar</h3><p>Repositórios e branches, no escopo da sua instalação GitHub.</p></div></div>
       <div class="flow"><span class="flow-number">02</span><div><h3>Revise com evidência</h3><p>Achados técnicos separados de explicações geradas por IA.</p></div></div>
     </div>
-    <form id="login-form" class="panel login-form"><span class="eyebrow">ACESSO PRIVADO</span><h2>Entre no seu painel.</h2><p>Use o token de acesso configurado pelo operador deste ambiente. Não é um token pessoal do GitHub.</p>
+    <form id="login-form" class="panel login-form"><span class="eyebrow">ACESSO PRIVADO</span><h2>Entre no seu painel.</h2>${demo() ? '<p class="demo-token">Use o token <code>local-demo</code></p>' : '<p>Use o token de acesso configurado pelo operador deste ambiente. Não é um token pessoal do GitHub.</p>'}
       <label for="access-token">Token de acesso</label><input id="access-token" name="token" type="password" required autocomplete="off" spellcheck="false" placeholder="Seu token de acesso">
       <p id="login-error" class="form-error" role="alert" ${message ? "" : "hidden"}>${e(message)}</p>
       <button class="primary" type="submit">Acessar painel <span aria-hidden="true">→</span></button>
-      ${demo() ? '<p class="note">Para explorar esta demonstração, use <code>local-demo</code>. Os dados são fictícios e não representam projetos reais.</p>' : '<p>O acesso é restrito ao operador. Nenhuma credencial é salva no navegador pela interface.</p>'}
+      ${demo() ? button("Entrar na demonstração", "demo-login", "quiet") + '<p>Dados fictícios; não representam projetos reais.</p>' : '<p>O acesso é restrito ao operador. Nenhuma credencial é salva no navegador pela interface.</p>'}
     </form>
   </section>`;
 }
 
 function endSession() {
+  clearTimeout(state.detailTimer);
   state.authenticated = false; state.busy = false; state.operation = null; state.epoch++; state.detailEpoch++;
   clearTimeout(state.timer);
   state.dashboard = null; state.installations = []; state.repositories = []; state.branches = [];
@@ -115,10 +121,10 @@ function stat(label, value, caption, accent = false) {
 }
 function scanTable(scans) {
   if (!scans.length) return empty("Nenhuma análise por aqui, ainda.", "Selecione as branches que deseja monitorar. As análises aparecerão aqui após um envio de código ou uma execução manual.", '<a href="#branches" class="button">Selecionar branches <span aria-hidden="true">→</span></a>');
-  return `<div class="table-wrap"><table><caption class="eyebrow" style="text-align:left">${demo() ? "Análises sintéticas" : "Análises recebidas do serviço"}</caption><thead><tr><th scope="col">Repositório / branch</th><th scope="col">Estado</th><th scope="col">Achados</th><th scope="col">Atualização</th><th scope="col">Relatório</th></tr></thead><tbody>${scans.map(scan => `<tr>
-    <td><strong class="break">${e(scan.repository)}</strong><span class="secondary mono">↳ ${e(scan.branch)} <span aria-hidden="true">·</span> ${e(scan.commit_sha?.slice(0, 7) || "sem commit")}</span>${scan.source === "demo" ? badge("Sintético", "demo") : scan.source === "github" ? "" : badge("Origem não informada")}</td>
-    <td>${badge(scanLabel(scan.status), scan.status)}</td><td class="mono">${scan.status === "completed" ? count(scan.finding_count) : "—"}</td>
-    <td class="secondary">${e(formatDate(scan.completed_at || scan.created_at))}</td><td>${button("Ver análise →", "detail", "text-button", false, `data-id="${e(scan.id)}" aria-label="Ver análise de ${e(scan.repository)}, branch ${e(scan.branch)}"`)}</td>
+  return `<div class="table-wrap responsive-table"><table role="table"><caption class="eyebrow" style="text-align:left">${demo() ? "Análises sintéticas" : "Análises recebidas do serviço"}</caption><thead><tr><th scope="col">Repositório / branch</th><th scope="col">Estado</th><th scope="col">Achados</th><th scope="col">Atualização</th><th scope="col">Relatório</th></tr></thead><tbody>${scans.map(scan => `<tr>
+    <td data-label="Repositório / branch"><strong class="break">${e(scan.repository)}</strong><span class="secondary mono">↳ ${e(scan.branch)} <span aria-hidden="true">·</span> ${e(scan.commit_sha?.slice(0, 7) || "sem commit")}</span>${scan.source === "demo" ? badge("Sintético", "demo") : scan.source === "github" ? "" : badge("Origem não informada")}</td>
+    <td data-label="Estado">${badge(scanLabel(scan.status), scan.status)}</td><td data-label="Achados" class="mono">${scan.status === "completed" ? count(scan.finding_count) : "—"}</td>
+    <td data-label="Atualização" class="secondary">${e(formatDate(scan.completed_at || scan.created_at))}</td><td data-label="Relatório">${button("Ver análise →", "detail", "text-button", false, `data-id="${e(scan.id)}" aria-label="Ver análise de ${e(scan.repository)}, branch ${e(scan.branch)}"`)}</td>
   </tr>`).join("")}</tbody></table></div>`;
 }
 function overview() {
@@ -127,7 +133,7 @@ function overview() {
     <div class="stats">${stat("Repositórios no escopo", data.repositories, "disponíveis na instalação")}${stat("Branches selecionadas", data.selected_branches, "acompanhadas por webhook")}${stat("Análises registradas", data.scans, demo() ? "execuções sintéticas" : "execuções do serviço")}${stat("Achados registrados", data.findings, "podem se repetir entre análises", true)}</div>
     <div class="toolbar"><div class="actions">${scopeControls()}</div><a href="#branches" class="button primary">Selecionar branches <span aria-hidden="true">→</span></a></div>
     <div class="overview-grid"><section><div class="section-heading"><div><span class="eyebrow">ÚLTIMAS EXECUÇÕES · REPOSITÓRIO SELECIONADO</span><h2>Do código à revisão.</h2></div><a href="#results" class="text-button">Ver todas →</a></div>${scanTable(state.scans.slice(0, 5))}</section>
-    <aside class="panel panel-body"><span class="eyebrow">CONEXÕES DO AMBIENTE</span><div class="connection"><div class="inline"><h3>GitHub App</h3>${badge(state.meta.github_configured ? "Configurado" : "Não configurado", state.meta.github_configured ? "live" : "muted")}</div><p>${demo() ? "Instalação e eventos simulados. Não há conexão real nesta demonstração." : state.meta.github_configured ? "A configuração está presente. A atividade abaixo confirma os eventos recebidos, não a saúde contínua da conexão." : "O operador precisa configurar o GitHub App no serviço para receber repositórios e eventos."}</p></div>
+    <aside class="panel panel-body"><span class="eyebrow">CONEXÕES DO AMBIENTE</span><div class="connection"><div class="inline"><h3>GitHub App</h3>${badge(demo() ? "Simulado" : state.meta.github_configured ? "Configurado" : "Não configurado", !demo() && state.meta.github_configured ? "live" : "muted")}</div><p>${demo() ? "Instalação e eventos simulados. Não há conexão real nesta demonstração." : state.meta.github_configured ? "A configuração está presente. A atividade abaixo confirma os eventos recebidos, não a saúde contínua da conexão." : "O operador precisa configurar o GitHub App no serviço para receber repositórios e eventos."}</p></div>
     <div class="connection"><div class="inline"><h3>Explicações por IA</h3>${badge(state.meta.ai_configured ? "Configurada" : "Desabilitadas", state.meta.ai_configured ? "live" : "muted")}</div><p>Quando disponíveis, ajudam na leitura. Não substituem evidência nem determinam o alcance.</p></div>
     <div class="connection"><span class="eyebrow">ÚLTIMA ANÁLISE</span><p>${e(formatDate(data.last_scan_at))}</p></div></aside></div>
     <div class="note spaced"><strong>Leia o resultado, não uma promessa de segurança.</strong><p>Sem achados nos dados analisados não significa ausência de vulnerabilidades. Alcance desconhecido permanece desconhecido.</p></div>`;
@@ -146,7 +152,16 @@ function scopeEmpty() {
 function branchRows() {
   const visible = state.branches.filter(branch => branch.name.toLocaleLowerCase("pt-BR").includes(state.filter.toLocaleLowerCase("pt-BR")));
   if (!visible.length) return empty(state.branches.length ? "Nenhuma branch encontrada." : "Nenhuma branch disponível.", state.branches.length ? "Tente buscar por outro nome." : "Verifique se o repositório tem branches e atualize a lista.");
-  return `<div class="panel">${visible.map((branch, index) => `<div class="branch-row"><label for="branch-${index}"><input type="checkbox" id="branch-${index}" data-branch="${e(branch.name)}" ${state.selected.has(branch.name) ? "checked" : ""} ${state.busy ? "disabled" : ""}><span class="mono">${e(branch.name)}</span>${branch.name === repo()?.default_branch ? badge("Principal") : ""}</label><div class="actions">${branch.selected ? badge("Monitorada", "live") : badge("Fora do escopo")}${button("Analisar", "scan", "text-button", state.busy || !branch.selected, `data-branch="${e(branch.name)}" aria-label="Analisar branch ${e(branch.name)}"`)}</div></div>`).join("")}</div>`;
+  return `<div class="panel">${visible.map((branch, index) => `<div class="branch-row"><label for="branch-${index}"><input type="checkbox" id="branch-${index}" data-branch="${e(branch.name)}" ${state.selected.has(branch.name) ? "checked" : ""} ${state.busy ? "disabled" : ""}><span class="mono">${e(branch.name)}</span>${branch.name === repo()?.default_branch ? badge("Principal") : ""}</label><div class="actions"><span data-branch-state="${e(branch.name)}">${branchBadge(branch)}</span>${button("Analisar", "scan", "text-button", state.busy || !branch.selected || isDirty(state.branches, state.selected), `data-branch="${e(branch.name)}" aria-label="Analisar branch ${e(branch.name)}"`)}</div></div>`).join("")}</div>`;
+}
+function branchBadge(branch) {
+  const selected = state.selected.has(branch.name);
+  return selected !== branch.selected ? badge(selected ? "A incluir ao salvar" : "A remover ao salvar", "unknown") : branch.selected ? badge("Monitorada", "live") : badge("Fora do escopo");
+}
+function simulationControls() {
+  const dirty = isDirty(state.branches, state.selected);
+  const saved = state.branches.filter(branch => branch.selected);
+  return `<label class="field" for="simulation-branch">Branch do push simulado<select id="simulation-branch" ${state.busy || dirty || !saved.length ? "disabled" : ""}>${saved.map(branch => `<option value="${e(branch.name)}">${e(branch.name)}</option>`).join("")}</select></label>${button("Simular push de demonstração", "simulate", "", state.busy || dirty || !saved.length)}<p id="simulation-help" class="secondary small">${dirty ? "Salve a seleção para simular" : saved.length ? "O push usa a branch indicada acima. Nenhum push real é enviado ao GitHub." : "Selecione e salve uma branch para simular."}</p>`;
 }
 function branches() {
   const dirty = isDirty(state.branches, state.selected);
@@ -156,7 +171,7 @@ function branches() {
       <label class="field" for="branch-search">Buscar branch<input id="branch-search" type="search" placeholder="Filtrar pelo nome…" value="${e(state.filter)}" autocomplete="off"></label><div id="branch-list" class="spaced">${branchRows()}</div>
       <div class="save-bar"><p id="selection-summary" aria-live="polite">${state.selected.size} selecionada(s)${dirty ? " · Alterações não salvas" : " · Seleção salva"}</p><div class="actions">${button("Descartar", "discard", "quiet", !dirty || state.busy)}${button(state.operation === "save" ? "Salvando…" : "Salvar seleção", "save", "primary", !dirty || state.busy)}</div></div>
       <p class="secondary small spaced">Desmarcar todas pausa novas análises por webhook neste repositório. O histórico é preservado.</p></section>
-      <aside class="panel panel-body"><span class="eyebrow">COMO FUNCIONA</span><div class="flow" style="border-top:0;padding-top:0"><span class="flow-number">01</span><div><h3>Selecione e salve</h3><p>A seleção só muda no serviço depois de salvar.</p></div></div><div class="flow"><span class="flow-number">02</span><div><h3>Envie código</h3><p>${demo() ? "Nesta demonstração, simule um push em uma branch salva." : "Um push em uma branch monitorada dispara a análise no serviço."}</p></div></div><div class="flow"><span class="flow-number">03</span><div><h3>Revise os achados</h3><p>Consulte os componentes, as evidências e as limitações de cada execução.</p></div></div>${demo() ? `${button("Simular push de demonstração", "simulate", "", state.busy || dirty || !state.selected.size)}<p class="secondary small" style="margin-top:10px">Usa a primeira branch selecionada. Nenhum push real é enviado ao GitHub.</p>` : ""}</aside></div>`}`;
+      <aside class="panel panel-body"><span class="eyebrow">COMO FUNCIONA</span><div class="flow" style="border-top:0;padding-top:0"><span class="flow-number">01</span><div><h3>Selecione e salve</h3><p>A seleção só muda no serviço depois de salvar.</p></div></div><div class="flow"><span class="flow-number">02</span><div><h3>Envie código</h3><p>${demo() ? "Nesta demonstração, simule um push em uma branch salva." : "Um push em uma branch monitorada dispara a análise no serviço."}</p></div></div><div class="flow"><span class="flow-number">03</span><div><h3>Revise os achados</h3><p>Consulte os componentes, as evidências e as limitações de cada execução.</p></div></div><div id="simulation-controls">${demo() ? simulationControls() : ""}</div></aside></div>`}`;
 }
 
 function results() {
@@ -168,11 +183,11 @@ function results() {
 }
 function activity() {
   return `${pageHeading("04", 'A história começa<br><span class="accent">em um evento.</span>', "Confira os eventos recebidos pelo serviço e acompanhe o que entrou no fluxo de monitoramento.", `<div class="actions">${button("Atualizar", "refresh", "", state.busy)}</div>`)}
-    ${state.deliveries.length ? `<div class="table-wrap"><table><thead><tr><th scope="col">Evento</th><th scope="col">Repositório / branch</th><th scope="col">Processamento</th><th scope="col">Recebido em</th></tr></thead><tbody>${state.deliveries.map(delivery => `<tr><td><strong>${e(delivery.event)}</strong><span class="secondary mono">${e(delivery.delivery_id)}</span></td><td><span class="break">${e(delivery.repository || "—")}</span><span class="secondary mono">${e(delivery.branch || "—")}</span></td><td>${badge(deliveryLabel(delivery.status), delivery.status === "failed" ? "failed" : "muted")}</td><td>${e(formatDate(delivery.received_at))}</td></tr>`).join("")}</tbody></table></div>` : empty("Nenhum evento recebido ainda.", demo() ? "Selecione uma branch e use a simulação de push para explorar o fluxo de demonstração." : "Após configurar o webhook do GitHub App, os eventos recebidos aparecerão aqui.")}
+    ${state.deliveries.length ? `<div class="table-wrap responsive-table"><table role="table"><thead><tr><th scope="col">Evento</th><th scope="col">Repositório / branch</th><th scope="col">Resultado do evento / análise atual</th><th scope="col">Recebido em</th></tr></thead><tbody>${state.deliveries.map(delivery => `<tr><td data-label="Evento"><strong>${e(delivery.event)}</strong><span class="secondary mono">${e(delivery.delivery_id)}</span></td><td data-label="Repositório / branch"><span class="break">${e(delivery.repository || "—")}</span><span class="secondary mono">${e(delivery.branch || "—")}</span></td><td data-label="Resultado do evento / análise atual">${badge(deliveryLabel(delivery.status), delivery.status === "failed" ? "failed" : "muted")}${delivery.scan_id ? `<span class="secondary">Análise: ${e(scanLabel(delivery.scan_status))}</span>${button("Ver análise →", "detail", "text-button", false, `data-id="${e(delivery.scan_id)}"`)}` : ""}</td><td data-label="Recebido em">${e(formatDate(delivery.received_at))}</td></tr>`).join("")}</tbody></table></div>` : empty("Nenhum evento recebido ainda.", demo() ? "Selecione uma branch e use a simulação de push para explorar o fluxo de demonstração." : "Após configurar o webhook do GitHub App, os eventos recebidos aparecerão aqui.")}
     <div class="note spaced">${demo() ? "Eventos sintéticos, gerados no ambiente de demonstração. Nenhum webhook real é representado." : "Um evento recebido não significa uma análise concluída. Consulte o estado da execução em Análises."}</div>`;
 }
 function deliveryLabel(status) {
-  return ({ accepted: "Aceito", queued: "Na fila", processed: "Processado", ignored: "Ignorado", failed: "Falhou", rejected: "Rejeitado", duplicate: "Duplicado", completed: "Concluído", received: "Recebido" })[status] || "Estado não reconhecido";
+  return ({ accepted: "Aceito", queued: "Análise enfileirada", processed: "Processado", ignored: "Ignorado", failed: "Falhou", rejected: "Rejeitado", duplicate: "Duplicado", completed: "Concluído", received: "Recebido" })[status] || "Estado não reconhecido";
 }
 
 function renderView() {
@@ -244,10 +259,11 @@ function findingMarkup(finding) {
   return `<article class="finding"><div class="section-heading"><h3>${e(finding.advisory_id || finding.id)}</h3>${badge(reachabilityLabel(finding.reachability), finding.reachability === "unknown" ? "unknown" : "muted")}</div><p><strong>${e(finding.package_name)}</strong> <span class="mono secondary">${e(finding.version)}</span> <span class="secondary">· Severidade: ${severity}</span></p><p class="secondary">${e(finding.summary || "O aviso não inclui um resumo.")}</p>
     <details><summary>Ver evidências e limites</summary><div class="evidence"><dl><dt>Identificador</dt><dd class="mono">${e(finding.advisory_id || finding.id)}</dd><dt>Componente</dt><dd class="mono">${e(finding.purl || finding.package_name)}</dd><dt>Ecossistema</dt><dd>${e(finding.ecosystem || "Não informado")}</dd><dt>Correção informada</dt><dd>${e(finding.fixed_versions?.length ? finding.fixed_versions.join(", ") : "Nenhuma versão informada nos dados")}</dd><dt>Alcance</dt><dd>${e(reachabilityLabel(finding.reachability))}. ${finding.reachability === "unknown" ? "A presença da dependência não prova que o caminho vulnerável é executado." : "Consulte a evidência técnica da análise; o resumo de IA não é uma comprovação."}</dd></dl></div></details></article>`;
 }
-async function openDetail(id) {
+async function openDetail(id, polling = false) {
+  clearTimeout(state.detailTimer);
   const epoch = ++state.detailEpoch;
   const dialog = $("#detail-dialog");
-  $("#detail-content").innerHTML = `<div class="dialog-heading"><h2 id="detail-title">Carregando análise…</h2>${button("Fechar", "close-detail", "quiet")}</div><p class="secondary" role="status">Consultando o relatório e suas evidências.</p>`;
+  if (!polling) $("#detail-content").innerHTML = `<div class="dialog-heading"><h2 id="detail-title">Carregando análise…</h2>${button("Fechar", "close-detail", "quiet")}</div><p class="secondary" role="status">Consultando o relatório e suas evidências.</p>`;
   if (!dialog.open) dialog.showModal();
   try {
     const scan = await api(`/api/scans/${encodeURIComponent(id)}`);
@@ -256,16 +272,22 @@ async function openDetail(id) {
     const findings = Array.isArray(scan.findings) ? scan.findings : [];
     const components = Array.isArray(scan.components) ? scan.components : [];
     const warnings = Array.isArray(scan.warnings) ? scan.warnings : [];
+    const pending = ["queued", "running"].includes(scan.status);
     $("#detail-content").innerHTML = `<div class="dialog-heading"><div><span class="eyebrow">RELATÓRIO DA EXECUÇÃO</span><h2 id="detail-title">${scan.status === "completed" ? findings.length ? `${count(findings.length)} achado(s).` : "Sem achados nos dados." : e(scanLabel(scan.status))}</h2></div>${button("Fechar", "close-detail", "quiet")}</div>
       <div class="inline">${badge(scanLabel(scan.status), scan.status)}${badge(scan.source === "demo" ? "Demonstração · dados fictícios" : scan.source === "github" ? "Origem: GitHub" : "Origem não informada", scan.source === "demo" ? "demo" : "muted")}</div>
       <div class="dialog-meta"><span class="break">${e(scan.repository)} <span aria-hidden="true">/</span> ${e(scan.branch)}</span><span class="mono">Commit ${e(scan.commit_sha || "não informado")}</span><span>${e(formatDate(scan.completed_at || scan.created_at))}</span></div>
       ${scan.source === "demo" ? '<p class="note">Este relatório é sintético. Não representa o estado de segurança de um projeto real.</p>' : ""}
       ${scan.error ? '<p class="note form-error">A execução falhou. Verifique a configuração do serviço e os registros com o operador; dados incompletos não comprovam ausência de vulnerabilidades.</p>' : ""}
-      ${scan.status === "queued" || scan.status === "running" ? `<p class="note">A análise ainda não terminou. ${button("Atualizar relatório", "detail", "text-button", false, `data-id="${e(id)}"`)}</p>` : ""}
+      ${pending ? `<p class="note">Resultados ainda não calculados. Acompanhando automaticamente. ${button("Atualizar agora", "detail", "text-button", false, `data-id="${e(id)}"`)}</p>` : ""}
       ${warnings.length ? `<div class="note"><strong>Limitações informadas pelo serviço</strong><ul>${warnings.map(warning => `<li class="break">${e(warning)}</li>`).join("")}</ul></div>` : ""}
+      ${scan.status === "completed" ? `
       <section class="spaced" aria-label="Achados técnicos"><span class="eyebrow">01 / RESULTADO TÉCNICO</span>${findings.length ? findings.map(findingMarkup).join("") : empty("Nenhum achado disponível.", scan.status === "completed" ? "Nenhum aviso nos dados analisados. Isso não significa que o projeto está livre de vulnerabilidades." : "Aguarde uma execução concluída para consultar os achados.")}</section>
       <section class="explanation"><span class="eyebrow">02 / APOIO À LEITURA</span><div class="inline"><h3>${e(explanation.title)}</h3>${explanation.ai ? badge("IA · conteúdo não verificado", "unknown") : ""}</div>${explanation.note ? `<p class="secondary small">${e(explanation.note)}</p>` : ""}<p>${e(explanation.text)}</p><p class="secondary small">${explanation.ai ? "Texto gerado por IA, não uma evidência técnica. Pode conter erros. " : ""}A explicação não altera os achados nem comprova se um caminho vulnerável é executado.</p></section>
-      <details class="spaced"><summary>Componentes analisados (${count(components.length)})</summary><div class="table-wrap spaced"><table><thead><tr><th scope="col">Componente</th><th scope="col">Versão</th><th scope="col">Ecossistema / manifesto</th></tr></thead><tbody>${components.map(component => `<tr><td class="break">${e(component.name)}<span class="secondary mono">${e(component.purl)}</span></td><td class="mono">${e(component.version)}</td><td>${e(component.ecosystem)}<span class="secondary mono">${e(component.manifest_path || "—")}</span></td></tr>`).join("")}</tbody></table></div></details>`;
+      <details class="spaced"><summary>Componentes analisados (${count(components.length)})</summary><div class="table-wrap spaced"><table><thead><tr><th scope="col">Componente</th><th scope="col">Versão</th><th scope="col">Ecossistema / manifesto</th></tr></thead><tbody>${components.map(component => `<tr><td class="break">${e(component.name)}<span class="secondary mono">${e(component.purl)}</span></td><td class="mono">${e(component.version)}</td><td>${e(component.ecosystem)}<span class="secondary mono">${e(component.manifest_path || "—")}</span></td></tr>`).join("")}</tbody></table></div></details>` : ""}`;
+    $("#detail-announcement").textContent = `Análise: ${scanLabel(scan.status)}.`;
+    if (pending) state.detailTimer = setTimeout(() => {
+      if (dialog.open && epoch === state.detailEpoch) return openDetail(id, true);
+    }, 2000);
   } catch (error) {
     if (epoch === state.detailEpoch && dialog.open) $("#detail-content").innerHTML = `<div class="dialog-heading"><h2 id="detail-title">Relatório indisponível.</h2>${button("Fechar", "close-detail", "quiet")}</div><p role="alert">${e(error.message)}</p>${button("Tentar novamente", "detail", "", false, `data-id="${e(id)}"`)}`;
   }
@@ -308,10 +330,10 @@ document.addEventListener("submit", async event => {
   submit.disabled = true; submit.textContent = "Entrando…"; $("#login-error").hidden = true;
   try {
     await api("/api/session", { method: "POST", body: { token } });
-    field.value = ""; state.authenticated = true; clearNotice(); renderView(); await refresh(); $("#main").focus();
+    field.value = ""; state.authenticated = true; clearNotice(); renderView(); await refresh(); focusMain();
   } catch (error) {
     field.value = ""; $("#login-error").textContent = error.status === 401 ? "Token inválido. Confira o token de acesso do ambiente." : error.message;
-    $("#login-error").hidden = false; submit.disabled = false; submit.textContent = "Acessar painel →"; field.focus();
+    $("#login-error").hidden = false; submit.disabled = false; submit.textContent = "Acessar painel →"; field.focus({ preventScroll: true });
   }
 });
 
@@ -319,7 +341,11 @@ document.addEventListener("click", async event => {
   const target = event.target.closest("[data-action]");
   if (!target || target.disabled) return;
   const action = target.dataset.action;
-  if (action === "refresh") await refresh();
+  if (action === "demo-login" && demo()) {
+    $("#access-token").value = "local-demo";
+    $("#login-form").requestSubmit();
+  }
+  else if (action === "refresh") await refresh();
   else if (action === "sync") {
     if (isDirty(state.branches, state.selected)) { notice("Salve ou descarte suas alterações antes de sincronizar.", true); return; }
     await mutation(async () => {
@@ -331,9 +357,12 @@ document.addEventListener("click", async event => {
   else if (action === "discard") { state.selected = new Set(state.branches.filter(branch => branch.selected).map(branch => branch.name)); renderView(); }
   else if (action === "save") await saveBranches();
   else if (action === "scan") await queueScan(target.dataset.branch);
-  else if (action === "simulate" && demo()) { const branch = state.branches.find(value => value.selected)?.name; if (branch) await queueScan(branch, true); }
+  else if (action === "simulate" && demo()) {
+    const branch = $("#simulation-branch").value;
+    if (state.branches.some(value => value.name === branch && value.selected)) await queueScan(branch, true);
+  }
   else if (action === "detail") await openDetail(target.dataset.id);
-  else if (action === "close-detail") { state.detailEpoch++; $("#detail-dialog").close(); }
+  else if (action === "close-detail") { clearTimeout(state.detailTimer); state.detailEpoch++; $("#detail-dialog").close(); }
   else if (action === "boot") await boot();
 });
 
@@ -345,7 +374,14 @@ document.addEventListener("change", async event => {
     $("#selection-summary").textContent = `${state.selected.size} selecionada(s) · ${isDirty(state.branches, state.selected) ? "Alterações não salvas" : "Seleção salva"}`;
     const dirty = isDirty(state.branches, state.selected);
     $('[data-action="save"]').disabled = !dirty; $('[data-action="discard"]').disabled = !dirty;
-    const simulate = $('[data-action="simulate"]'); if (simulate) simulate.disabled = dirty || !state.selected.size;
+    document.querySelectorAll("[data-branch-state]").forEach(node => {
+      const branch = state.branches.find(value => value.name === node.dataset.branchState);
+      if (branch) node.innerHTML = branchBadge(branch);
+    });
+    document.querySelectorAll('[data-action="scan"]').forEach(node => {
+      node.disabled = dirty || state.busy || !state.branches.some(branch => branch.name === node.dataset.branch && branch.selected);
+    });
+    if (demo()) $("#simulation-controls").innerHTML = simulationControls();
     return;
   }
   if (target.dataset.control === "status") { state.statusFilter = target.value; renderView(); return; }
@@ -375,9 +411,9 @@ function readView() {
   const view = location.hash.slice(1);
   return ["overview", "branches", "results", "activity"].includes(view) ? view : "overview";
 }
-window.addEventListener("hashchange", () => { state.view = readView(); state.filter = ""; clearNotice(); renderView(); $("#main").focus(); });
+window.addEventListener("hashchange", () => { state.view = readView(); state.filter = ""; clearNotice(); renderView(); focusMain(); });
 window.addEventListener("beforeunload", event => { if (state.authenticated && isDirty(state.branches, state.selected)) { event.preventDefault(); event.returnValue = ""; } });
-$("#detail-dialog").addEventListener("close", () => { state.detailEpoch++; });
+$("#detail-dialog").addEventListener("close", () => { clearTimeout(state.detailTimer); state.detailEpoch++; focusMain(); });
 $("#logout").addEventListener("click", async () => {
   if (isDirty(state.branches, state.selected)) { notice("Salve ou descarte suas alterações antes de sair.", true); return; }
   try { await api("/api/session", { method: "DELETE" }); endSession(); clearNotice(); }

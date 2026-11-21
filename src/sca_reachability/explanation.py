@@ -180,9 +180,9 @@ def _factual_boundary(metadata: dict[str, Any]) -> str:
         "unknown": "não informada",
     }
     reachability_labels = {
-        "reachable": "reachable",
-        "unreachable": "unreachable",
-        "unknown": "unknown",
+        "reachable": "alcançável",
+        "unreachable": "inalcançável",
+        "unknown": "desconhecido",
     }
     excerpt_note = ""
     if metadata["omitted_findings"]:
@@ -193,14 +193,14 @@ def _factual_boundary(metadata: dict[str, Any]) -> str:
         )
     return (
         "Limite factual: o relatório lista "
-        f"{metadata['total_findings']} achado(s). Classificações registradas — "
+        f"{metadata['total_findings']} {'achado' if metadata['total_findings'] == 1 else 'achados'}. Classificações registradas — "
         "severidade: "
         f"{_format_counts(metadata['severity_counts'], severity_labels)}; "
-        "reachability: "
+        "alcance: "
         f"{_format_counts(metadata['reachability_counts'], reachability_labels)}. "
         f"{excerpt_note} "
         "Esta explicação não altera nem confirma essas classificações. "
-        "'Unknown' não significa seguro; quando não há achados listados, isso não "
+        "Alcance desconhecido não significa seguro; quando não há achados listados, isso não "
         "comprova ausência de vulnerabilidades."
     )
 
@@ -216,16 +216,16 @@ def _deterministic_text(metadata: dict[str, Any], valid_report: bool) -> str:
     total = metadata["total_findings"]
     if total:
         overview = (
-            f"O relatório fornecido lista {total} achado(s). "
+            f"O relatório fornecido lista {total} {'achado' if total == 1 else 'achados'}. "
             "Classificações de severidade: "
-            f"{_format_counts(metadata['severity_counts'], {key: key for key in _SEVERITIES})}. "
-            "Classificações de reachability: "
-            f"{_format_counts(metadata['reachability_counts'], {key: key for key in _REACHABILITY})}."
+            f"{_format_counts(metadata['severity_counts'], dict(zip(_SEVERITIES, ('crítica', 'alta', 'média', 'baixa', 'informativa', 'não informada'))))}. "
+            "Classificações de alcance: "
+            f"{_format_counts(metadata['reachability_counts'], dict(zip(_REACHABILITY, ('alcançável', 'inalcançável', 'desconhecido'))))}."
         )
     else:
         overview = (
             "O relatório fornecido não lista achados. Isso não demonstra ausência "
-            "de vulnerabilidades."
+            "de vulnerabilidades. Considere a cobertura dos dados e os limites da análise."
         )
 
     excerpt_note = ""
@@ -234,10 +234,13 @@ def _deterministic_text(metadata: dict[str, Any], valid_report: bool) -> str:
             f" A entrada opcional de IA foi limitada a {_MAX_FINDINGS} achados; "
             "as contagens incluem todos os achados."
         )
+    recommendation = (
+        " Revise os avisos e, após verificação, avalie uma versão compatível corrigida."
+        if total else ""
+    )
     return (
-        f"{overview}{excerpt_note} 'Unknown' não significa seguro. Revise os "
-        "avisos e, após verificação, avalie uma versão compatível corrigida. "
-        "Nenhuma investigação automática foi feita."
+        f"{overview}{excerpt_note} Alcance desconhecido não significa seguro."
+        f"{recommendation} Nenhuma investigação automática foi feita."
     )
 
 

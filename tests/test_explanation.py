@@ -190,7 +190,7 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(received[0]["included_findings"], 50)
         self.assertEqual(received[0]["omitted_findings"], 2)
         self.assertEqual(received[0]["reachability_counts"]["reachable"], 52)
-        self.assertIn("52 achado(s)", result["text"])
+        self.assertIn("52 achados", result["text"])
         self.assertIn("somente os primeiros 50 achados", result["text"])
         self.assertIn("2 achado(s) foram omitidos", result["text"])
 
@@ -201,6 +201,22 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(result["source"], "deterministic")
         self.assertIn("não lista achados", result["text"])
         self.assertIn("não demonstra ausência", result["text"])
+        self.assertNotIn("Revise os avisos", result["text"])
+        self.assertNotIn("corrigida", result["text"])
+        self.assertIn("cobertura", result["text"])
+
+    def test_deterministic_summary_localizes_reachability_and_plural(self):
+        single = explanation.explain_report({"findings": [{"reachability": "unknown"}]})["text"]
+        self.assertIn("1 achado.", single)
+        self.assertIn("desconhecido 1", single)
+        self.assertNotIn("unknown", single)
+        self.assertIn("Revise os avisos", single)
+        multiple = explanation.explain_report({"findings": [
+            {"reachability": "reachable"}, {"reachability": "unreachable"},
+        ]})["text"]
+        self.assertIn("2 achados.", multiple)
+        self.assertIn("alcançável 1", multiple)
+        self.assertIn("inalcançável 1", multiple)
 
     def test_empty_report_can_be_explained_with_zero_counts(self):
         received = []

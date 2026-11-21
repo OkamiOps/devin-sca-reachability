@@ -235,7 +235,7 @@ class DemoOsvAdapter:
                     [
                         Advisory(
                             id="DEMO-0001",
-                            summary="Fictional fixture advisory; not a real vulnerability.",
+                            summary="Aviso sintético de demonstração; não representa uma vulnerabilidade real.",
                             severity=None,
                             fixed_versions=("1.1.0",),
                         )

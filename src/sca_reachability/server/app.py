@@ -187,7 +187,7 @@ def create_app(
     def meta():
         return {
             "mode": settings.mode,
-            "github_configured": bool(github_configured),
+            "github_configured": bool(github_configured) if settings.mode == "live" else False,
             "ai_configured": bool(app.state.ai_configured) if settings.mode == "live" else False,
             "auth_required": True,
         }
@@ -409,8 +409,11 @@ def create_app(
             rows = connection.execute(
                 f"""
                 SELECT d.delivery_id, d.event, d.installation_id, d.repository,
-                    d.branch, d.status, d.received_at FROM deliveries d
+                    d.branch, d.status, d.received_at, s.id AS scan_id,
+                    s.status AS scan_status FROM deliveries d
                 JOIN installations i ON i.id = d.installation_id
+                LEFT JOIN scans s ON s.id = d.scan_id
+                    AND s.installation_id = d.installation_id AND s.repository = d.repository
                 WHERE i.status = 'active' AND d.installation_id IN ({placeholders})
                     AND (d.repository IS NULL OR EXISTS (
                         SELECT 1 FROM repositories r WHERE r.installation_id = d.installation_id
@@ -483,11 +486,13 @@ def create_app(
         with database.connection() as connection:
             repository_scope(connection, DEMO_INSTALLATION_ID, DEMO_REPOSITORY_ID)
             existing = connection.execute(
-                "SELECT name FROM branches WHERE installation_id = ? AND repository_id = ? AND name = ?",
+                "SELECT name, selected FROM branches WHERE installation_id = ? AND repository_id = ? AND name = ?",
                 (DEMO_INSTALLATION_ID, DEMO_REPOSITORY_ID, branch),
             ).fetchone()
             if not existing:
                 raise ServiceError(400, "The demo branch does not exist.")
+            if not existing["selected"]:
+                raise ServiceError(400, "Select and save the demo branch before simulating a push.")
         delivery_id = "demo-" + uuid.uuid4().hex
         commit_sha = hashlib.sha1(delivery_id.encode()).hexdigest()
         record = getattr(github, "record_synthetic_push", None)

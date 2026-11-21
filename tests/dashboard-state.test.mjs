@@ -12,23 +12,27 @@ const appSource = (await readFile(new URL("../src/sca_reachability/static/app.js
 // DOM library. Visual, focus, and layout checks belong to the integrated UI run.
 function harness(responder) {
   const nodes = new Map();
+  const events = new Map(), windowEvents = new Map(), timers = new Map();
+  let timerId = 0;
   function node(selector) {
     if (!nodes.has(selector)) nodes.set(selector, {
       innerHTML: "", textContent: "", hidden: true, open: false,
-      classList: { toggle() {} }, setAttribute() {}, addEventListener() {},
-      contains() { return false; }, focus() {}, replaceChildren() {},
-      close() { this.open = false; }, showModal() { this.open = true; },
+      listeners: {}, classList: { toggle() {} }, setAttribute() {},
+      addEventListener(name, handler) { this.listeners[name] = handler; },
+      contains() { return false; }, focus(options) { this.focusOptions = options; }, replaceChildren() {},
+      close() { this.open = false; this.listeners.close?.(); }, showModal() { this.open = true; },
     });
     return nodes.get(selector);
   }
   const calls = [];
   const sandbox = {
     ...model, e: model.escapeHTML, console, URLSearchParams, AbortController,
-    setTimeout() { return 1; }, clearTimeout() {}, matchMedia() { return { matches: false }; },
+    setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, delay }); return id; },
+    clearTimeout(id) { timers.delete(id); }, matchMedia() { return { matches: false }; },
     localStorage: { getItem() { return null; }, setItem() {} }, location: { hash: "" },
-    window: { addEventListener() {} }, document: {
+    window: { addEventListener(name, handler) { windowEvents.set(name, handler); }, scrollTo() {} }, document: {
       querySelector: node, querySelectorAll() { return []; },
-      addEventListener() {}, documentElement: { dataset: {} }, activeElement: null,
+      addEventListener(name, handler) { events.set(name, handler); }, documentElement: { dataset: {} }, activeElement: null,
     },
     async fetch(path, options) {
       calls.push({ path, options });
@@ -36,9 +40,115 @@ function harness(responder) {
       return new Response(JSON.stringify(result.body ?? {}), { status: result.status ?? 200, headers: { "Content-Type": "application/json" } });
     },
   };
-  vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped };`, sandbox);
-  return { ...sandbox.testApp, nodes, calls };
+  vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped, overview, activity, scanTable, branchRows, simulationControls, renderLogin, openDetail, focusMain };`, sandbox);
+  return { ...sandbox.testApp, nodes, calls, events, windowEvents, timers,
+    async tick(delay) {
+      const entry = [...timers].find(([, timer]) => timer.delay === delay);
+      assert.ok(entry, `No timer with delay ${delay}`);
+      timers.delete(entry[0]); await entry[1].fn();
+    },
+  };
 }
+
+test("demo connection is neutral even with legacy configured metadata; live stays configured", () => {
+  const app = harness(() => ({}));
+  app.state.meta = { mode: "demo", github_configured: true };
+  assert.match(app.overview(), /badge muted">Simulado/);
+  assert.doesNotMatch(app.overview(), />Configurado</);
+  app.state.meta.mode = "live";
+  assert.match(app.overview(), /badge live">Configurado/);
+});
+
+test("activity separates webhook outcome from the linked scan state and handles no scan", () => {
+  const app = harness(() => ({}));
+  app.state.meta = { mode: "demo" };
+  app.state.deliveries = [{ event: "push", status: "queued", scan_id: 'id"<', scan_status: "completed" }, { event: "push", status: "ignored" }];
+  const html = app.activity();
+  assert.match(html, /Análise enfileirada/);
+  assert.match(html, /Análise: Concluída/);
+  assert.match(html, /data-id="id&quot;&lt;"/);
+  assert.equal((html.match(/data-action="detail"/g) || []).length, 1);
+});
+
+test("mobile table rows retain all labelled cells and the report action", async () => {
+  const app = harness(() => ({}));
+  app.state.meta = { mode: "demo" };
+  const html = app.scanTable([{ repository: "repo", branch: "main", id: "1", status: "completed" }]);
+  assert.match(html, /responsive-table/);
+  assert.equal((html.match(/data-label=/g) || []).length, 5);
+  assert.match(html, /data-label="Relatório"><button[^>]+data-action="detail"/);
+  const css = await readFile(new URL("../src/sca_reachability/static/styles.css", import.meta.url), "utf8");
+  assert.match(css, /@media \(max-width: 640px\)[\s\S]*\.responsive-table td \{ display: block; width: 100%; min-width: 0; \}/);
+  assert.match(css, /\.responsive-table td::before \{ content: attr\(data-label\)/);
+});
+
+test("pending branch rows and simulation explain unsaved changes and offer all saved targets", () => {
+  const app = harness(() => ({}));
+  Object.assign(app.state, { meta: { mode: "demo" }, branches: [{ name: "main", selected: true }, { name: "release", selected: true }, { name: "new", selected: false }], selected: new Set(["release", "new"]) });
+  assert.match(app.branchRows(), /A incluir ao salvar/);
+  assert.match(app.branchRows(), /A remover ao salvar/);
+  assert.match(app.simulationControls(), /Salve a seleção para simular/);
+  app.state.selected = new Set(["main", "release"]);
+  const html = app.simulationControls();
+  assert.match(html, /option value="main"/);
+  assert.match(html, /option value="release"/);
+  assert.doesNotMatch(html, /option value="new"/);
+});
+
+test("simulation sends the visibly chosen saved target", async () => {
+  const app = harness(() => ({ body: {} }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "demo" }, repository: 2,
+    branches: [{ name: "main", selected: true }, { name: "release", selected: true }], selected: new Set(["main", "release"]) });
+  app.nodes.set("#simulation-branch", { value: "release" });
+  await app.events.get("click")({ target: { closest() { return { dataset: { action: "simulate" } }; } } });
+  assert.equal(JSON.parse(app.calls[0].options.body).branch, "release");
+});
+
+test("open pending report polls in place to completion, announces and stops", async () => {
+  let status = "queued";
+  const app = harness(() => ({ body: { status, findings: [], components: [], source: "demo" } }));
+  app.state.authenticated = true;
+  await app.openDetail("scan");
+  assert.match(app.nodes.get("#detail-content").innerHTML, /Resultados ainda não calculados/);
+  assert.doesNotMatch(app.nodes.get("#detail-content").innerHTML, /Nenhum achado disponível|Componentes analisados|APOIO À LEITURA/);
+  status = "running"; await app.tick(2000);
+  assert.match(app.nodes.get("#detail-content").innerHTML, /Em andamento/);
+  status = "completed"; await app.tick(2000);
+  assert.match(app.nodes.get("#detail-content").innerHTML, /não significa que o projeto está livre/);
+  assert.equal(app.nodes.get("#detail-announcement").textContent, "Análise: Concluída.");
+  assert.equal(app.timers.size, 0);
+});
+
+test("closing a report cancels polling and restores focus without scrolling navigation away", async () => {
+  const app = harness(() => ({ body: { status: "queued" } }));
+  app.state.authenticated = true;
+  await app.openDetail("scan");
+  app.nodes.get("#detail-dialog").close();
+  assert.equal(app.timers.size, 0);
+  assert.equal(app.nodes.get("#main").focusOptions.preventScroll, true);
+});
+
+test("failed or unavailable reports never poll or present empty calculated results", async () => {
+  for (const result of [{ body: { status: "failed", error: "error" } }, { status: 503 }]) {
+    const app = harness(() => result);
+    app.state.authenticated = true;
+    await app.openDetail("scan");
+    assert.equal(app.timers.size, 0);
+    assert.doesNotMatch(app.nodes.get("#detail-content").innerHTML, /Componentes analisados|Nenhum achado disponível/);
+  }
+});
+
+test("demo login shows the single-line token hint and quick entry only in demo", async () => {
+  const app = harness(() => ({}));
+  app.state.meta = { mode: "demo" }; app.renderLogin();
+  assert.match(app.nodes.get("#main").innerHTML, /class="demo-token">Use o token <code>local-demo/);
+  let submitted = false;
+  app.nodes.set("#login-form", { requestSubmit() { submitted = true; } });
+  app.nodes.set("#access-token", { value: "" });
+  await app.events.get("click")({ target: { closest() { return { dataset: { action: "demo-login" } }; } } });
+  assert.equal(app.nodes.get("#access-token").value, "local-demo");
+  assert.equal(submitted, true);
+});
 
 test("unavailable backend never inserts synthetic inventory or a demo login", async () => {
   const app = harness(() => ({ status: 503 }));

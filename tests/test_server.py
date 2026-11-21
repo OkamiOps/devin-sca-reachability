@@ -134,6 +134,7 @@ class ServerTests(unittest.TestCase):
             factory.assert_not_called()
         meta = client.get("/api/meta").json()
         self.assertFalse(meta["ai_configured"])
+        self.assertFalse(meta["github_configured"])
         self.assertEqual(client.get("/api/dashboard").status_code, 401)
         response = client.post("/api/session", json={"token": "local-demo"}, headers=CSRF)
         self.assertEqual(response.json(), {"authenticated": True})
@@ -160,9 +161,26 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(release["components"][0]["version"], "1.1.0")
         self.assertEqual(release["finding_count"], 0)
         ignored = client.post("/api/demo/push", json={"repository_id": 9002, "branch": "develop"},
-                              headers=CSRF).json()
-        self.assertEqual(ignored["status"], "ignored")
-        self.assertIsNone(ignored["scan_id"])
+                              headers=CSRF)
+        self.assertEqual(ignored.status_code, 400)
+        self.assertEqual(client.post("/api/demo/push", json={"repository_id": 9002, "branch": ""},
+                                     headers=CSRF).status_code, 400)
+
+    def test_deliveries_expose_current_linked_scan_status_without_changing_event_outcome(self):
+        app, client = self.client()
+        self.assertTrue(client.get("/api/meta").json()["github_configured"])
+        self.select(client)
+        scan_id = self.push(client).json()["scan_id"]
+        def delivery():
+            return client.get("/api/deliveries", headers=AUTH).json()["items"][0]
+        self.assertEqual((delivery()["status"], delivery()["scan_id"], delivery()["scan_status"]),
+                         ("queued", scan_id, "queued"))
+        app.state.worker.run_once()
+        self.assertEqual((delivery()["status"], delivery()["scan_status"]), ("queued", "completed"))
+        self.push(client, "ignored", branch="release")
+        self.assertIsNone(delivery()["scan_id"])
+        self.assertIsNone(delivery()["scan_status"])
+        self.assertEqual(delivery()["status"], "ignored")
 
     def test_sessions_origin_hash_expiry_logout(self):
         app, client = self.client(demo=True)
