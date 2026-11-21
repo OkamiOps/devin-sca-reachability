@@ -18,3 +18,7 @@ class PublicError(ScanError):
         super().__init__(message)
         self.code = code
         self.status = status
+
+
+class PublicRetryableError(PublicError, RetryableError):
+    """A public API error that retains the worker's bounded retry behavior."""

@@ -12,7 +12,7 @@ if SERVER_AVAILABLE:
     from fastapi.testclient import TestClient
     from sca_reachability.server.app import create_app
     from sca_reachability.server.config import Settings
-    from sca_reachability.server.errors import PublicError
+    from sca_reachability.server.errors import PublicError, RetryableError
     from sca_reachability.server.osv_client import OsvClient
     from sca_reachability.server.public_github import PublicGitHubAdapter, normalize_repository, parse_tarball
 
@@ -46,6 +46,7 @@ class PublicByURLTests(unittest.TestCase):
             with self.assertRaises(PublicError) as error:
                 PublicGitHubAdapter((), client)._refs('a/b')
             self.assertEqual(error.exception.code, 'network')
+            self.assertIsInstance(error.exception, RetryableError)
             self.assertNotIn('diagnostics', str(error.exception))
         class Chunks(httpx.SyncByteStream):
             def __iter__(self):
@@ -60,6 +61,22 @@ class PublicByURLTests(unittest.TestCase):
         with self.assertRaises(PublicError) as error:
             parse_tarball(archive({'root/a': b'a', 'root/b': b'b'}), max_entries=1)
         self.assertEqual(error.exception.code, 'too_large')
+
+    def test_transient_snapshot_errors_retry_before_network_failure(self):
+        headers = {'Authorization': 'Bearer '+'t'*32}
+        for status in (429, 503):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
+                repo = client.post('/api/public/repositories', json={'url': 'a/b'}, headers=headers).json()['repository']
+                scan_id = client.post(f"/api/public/repositories/{repo['id']}/scan", json={'branch': 'main'}, headers=headers).json()['scan_id']
+                adapter = client.app.state.worker.github
+                with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(status))) as transport, patch.object(adapter, '_client', transport):
+                    for attempt in range(3):
+                        self.assertTrue(client.app.state.worker.run_once())
+                        report = client.get('/api/scans/'+scan_id, headers=headers).json()
+                        self.assertEqual(report['status'], 'failed' if attempt == 2 else 'queued')
+                        self.assertEqual(report['error_code'], 'network' if attempt == 2 else None)
+                        with client.app.state.database.transaction() as connection:
+                            connection.execute('UPDATE jobs SET available_at = 0')
 
     def app(self, directory, files=None, refs_status=200):
         snapshot = archive(files if files is not None else {
@@ -129,6 +146,42 @@ class PublicByURLTests(unittest.TestCase):
             self.assertEqual(report['findings'], [])
             self.assertEqual(client.post('/api/scans/'+scan_id+'/retry', headers=headers).status_code, 202)
             self.assertEqual(client.get('/api/scans/'+scan_id, headers=headers).json()['progress']['stage'], 'queued')
+
+    def test_sync_isolates_missing_and_network_failures(self):
+        headers = {'Authorization': 'Bearer '+'t'*32}
+        with tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
+            for name in ('a/missing', 'a/healthy', 'a/timeout'):
+                self.assertEqual(client.post('/api/public/repositories', json={'url': name}, headers=headers).status_code, 200)
+            def changed_refs(name):
+                if name == 'a/missing':
+                    raise PublicError('private_or_missing', 'Unavailable', 404)
+                if name == 'a/timeout':
+                    raise PublicError('network', 'Unavailable', 503)
+                return {'main': 'a'*40, 'release': 'b'*40}, 'main'
+            with patch.object(client.app.state.worker.github, '_refs', side_effect=changed_refs):
+                response = client.post('/api/installations/sync', headers=headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            repos = client.get('/api/installations/9003/repositories', headers=headers).json()['items']
+            self.assertEqual({r['full_name'] for r in repos}, {'a/healthy', 'a/timeout'})
+            healthy = next(r for r in repos if r['full_name'] == 'a/healthy')
+            branches = client.get(f"/api/installations/9003/repositories/{healthy['id']}/branches", headers=headers).json()['items']
+            self.assertEqual({b['name'] for b in branches}, {'main', 'release'})
+
+    def test_public_scan_cannot_select_a_twenty_first_monitored_branch(self):
+        headers = {'Authorization': 'Bearer '+'t'*32}
+        with tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
+            repo = client.post('/api/public/repositories', json={'url': 'a/b'}, headers=headers).json()['repository']
+            with client.app.state.database.transaction() as connection:
+                for index in range(20):
+                    connection.execute("INSERT INTO branches VALUES (9003, ?, ?, ?, 'now')", (repo['id'], f'branch{index}', int(index < 19)))
+            endpoint = f"/api/public/repositories/{repo['id']}/scan"
+            response = client.post(endpoint, json={'branch': 'branch19'}, headers=headers)
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()['code'], 'branch_limit')
+            with client.app.state.database.connection() as connection:
+                self.assertEqual(connection.execute('SELECT count(*) FROM branches WHERE selected = 1').fetchone()[0], 20)
+                self.assertEqual(connection.execute('SELECT count(*) FROM scans').fetchone()[0], 0)
+            self.assertEqual(client.post(endpoint, json={'branch': 'main'}, headers=headers).status_code, 202)
 
     def test_rate_cap_invalid_branch_and_errors(self):
         headers = {'Authorization': 'Bearer '+'t'*32}

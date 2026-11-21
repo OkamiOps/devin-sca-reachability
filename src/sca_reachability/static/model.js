@@ -13,6 +13,7 @@ export function publicErrorCopy(code) {
     network: "Não foi possível concluir a conexão. Tente novamente; isso não é um resultado de segurança.",
     rate_limit: "Muitas verificações. Aguarde um minuto antes de tentar novamente.",
     repository_cap: "Limite de 25 repositórios atingido. Escolha um repositório da lista existente.",
+    branch_limit: "Limite de 20 branches monitoradas. Desmarque uma branch em Monitoramento antes de analisar outra.",
   };
   return Object.hasOwn(messages, code) ? messages[code] : "A análise não pôde ser concluída. Tente novamente ou escolha outro repositório. Nenhum resultado de segurança foi produzido.";
 }

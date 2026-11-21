@@ -18,6 +18,7 @@ test("public URL validation and failure copy never imply an empty safe report", 
   }
   assert.match(publicErrorCopy("too_large"), /nenhum relatório/i);
   assert.match(publicErrorCopy("unsupported_no_manifests"), /versões exatas/);
+  assert.match(publicErrorCopy("branch_limit"), /20 branches.*Monitoramento/);
 });
 
 test("public progress uses actual stages and never marks pending or failed scans complete", () => {

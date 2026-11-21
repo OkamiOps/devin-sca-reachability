@@ -904,13 +904,28 @@ class ServerTests(unittest.TestCase):
         with app.state.database.transaction() as connection:
             connection.execute("UPDATE jobs SET status='running',attempts=1,lease_until=0 WHERE scan_id=?", (second,))
             connection.execute("UPDATE scans SET status='running' WHERE id=?", (second,))
+            connection.execute("INSERT INTO scan_progress VALUES (?, 'reachability', 3, 10, NULL, 'old')", (second,))
         self.github.failures = 0
         app2, client2 = self.client()
         app2.state.worker.recover_expired_leases()
+        recovered = client2.get('/api/scans/'+second, headers=AUTH).json()
+        self.assertEqual(recovered['progress']['stage'], 'queued')
+        self.assertIsNone(recovered['progress']['completed'])
+        self.assertIsNone(recovered['error_code'])
         with app2.state.database.transaction() as connection:
             connection.execute("UPDATE jobs SET available_at=0")
         app2.state.worker.run_once()
         self.assertEqual(client2.get("/api/scans/" + second, headers=AUTH).json()["status"], "completed")
+        with app2.state.database.transaction() as connection:
+            connection.execute("UPDATE jobs SET status='running',attempts=3,lease_until=0 WHERE scan_id=?", (second,))
+            connection.execute("UPDATE scans SET status='running' WHERE id=?", (second,))
+            connection.execute("UPDATE scan_progress SET stage='persisting', completed=1, total=10 WHERE scan_id=?", (second,))
+        app2.state.worker.recover_expired_leases()
+        failed = client2.get('/api/scans/'+second, headers=AUTH).json()
+        self.assertEqual(failed['status'], 'failed')
+        self.assertEqual(failed['progress']['stage'], 'failed')
+        self.assertIsNone(failed['progress']['total'])
+        self.assertEqual(failed['error_code'], 'analysis_failed')
 
     def test_dashboard_counts_latest_completed_branch_not_history(self):
         app, client = self.client()

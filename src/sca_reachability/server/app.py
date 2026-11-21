@@ -228,6 +228,12 @@ def create_app(
             raise PublicError('invalid_url', 'Escolha uma branch válida.')
         with database.transaction() as connection:
             repository_scope(connection, 9003, repository_id)
+            selected = connection.execute('SELECT selected FROM branches WHERE installation_id = 9003 AND repository_id = ? AND name = ?', (repository_id, branch)).fetchone()
+            if not selected:
+                raise PublicError('invalid_url', 'A branch selecionada não existe.')
+            monitored = connection.execute('SELECT count(*) FROM branches WHERE installation_id = 9003 AND repository_id = ? AND selected = 1', (repository_id,)).fetchone()[0]
+            if not selected['selected'] and monitored >= 20:
+                raise PublicError('branch_limit', 'Limite de 20 branches monitoradas. Desmarque uma branch em Monitoramento antes de analisar outra.', 409)
             changed = connection.execute('UPDATE branches SET selected = 1 WHERE installation_id = 9003 AND repository_id = ? AND name = ?', (repository_id, branch))
             if not changed.rowcount:
                 raise PublicError('invalid_url', 'A branch selecionada não existe.')

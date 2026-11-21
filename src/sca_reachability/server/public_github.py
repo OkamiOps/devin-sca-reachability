@@ -8,7 +8,7 @@ from urllib.parse import urlsplit, unquote
 
 import httpx
 
-from sca_reachability.server.errors import PublicError, RetryableError, ScanError
+from sca_reachability.server.errors import PublicError, PublicRetryableError, ScanError
 from sca_reachability.server.github import SHA_RE
 
 
@@ -172,7 +172,7 @@ class PublicGitHubAdapter:
                         url = str(target)
                         continue
                     if response.status_code == 429 or response.status_code >= 500:
-                        raise PublicError('network', 'GitHub temporariamente indisponível. Tente novamente.', 503)
+                        raise PublicRetryableError('network', 'GitHub temporariamente indisponível. Tente novamente.', 503)
                     if response.status_code in {401, 404}:
                         raise PublicError('private_or_missing', 'Repositório privado ou inexistente', 404)
                     if response.status_code != 200:
@@ -189,7 +189,7 @@ class PublicGitHubAdapter:
                     return b''.join(chunks)
             raise ScanError('Too many public GitHub redirects.')
         except httpx.RequestError as error:
-            raise PublicError('network', 'Não foi possível conectar ao GitHub. Tente novamente.', 503) from error
+            raise PublicRetryableError('network', 'Não foi possível conectar ao GitHub. Tente novamente.', 503) from error
 
     def _refs(self, repository):
         try:
