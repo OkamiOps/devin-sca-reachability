@@ -8,6 +8,7 @@ const state = {
   filter: "", statusFilter: "all", busy: false, operation: null, epoch: 0, detailEpoch: 0,
   lastUpdated: null, timer: null, noticeTimer: null, detailTimer: null,
   selectionError: "", saveError: "", connectionNotice: false,
+  simulationScope: null, simulationTarget: null,
 };
 const MAX_BRANCHES = 20;
 class ApiError extends Error {
@@ -211,9 +212,14 @@ function branchBadge(branch) {
   return selected !== branch.selected ? badge(selected ? "A incluir ao salvar" : "A remover ao salvar", "unknown") : branch.selected ? badge("Monitorada", "live") : badge("Fora do escopo");
 }
 function simulationControls() {
+  const scope = `${state.installation ?? ""}:${state.repository ?? ""}`;
+  if (state.simulationScope !== scope) {
+    state.simulationScope = scope; state.simulationTarget = null;
+  }
   const dirty = isDirty(state.branches, state.selected);
   const saved = state.branches.filter(branch => branch.selected);
-  return `<label class="field" for="simulation-branch">Branch do push simulado<select id="simulation-branch" ${state.busy || dirty || !saved.length ? "disabled" : ""}>${saved.map(branch => `<option value="${e(branch.name)}">${e(branch.name)}</option>`).join("")}</select></label>${button("Simular push de demonstração", "simulate", "", state.busy || dirty || !saved.length)}<p id="simulation-help" class="secondary small">${dirty ? "Salve a seleção para simular" : saved.length ? "O push usa a branch indicada acima. Nenhum push real é enviado ao GitHub." : "Selecione e salve uma branch para simular."}</p>`;
+  if (!saved.some(branch => branch.name === state.simulationTarget)) state.simulationTarget = saved[0]?.name ?? null;
+  return `<label class="field" for="simulation-branch">Branch do push simulado<select id="simulation-branch" ${state.busy || dirty || !saved.length ? "disabled" : ""}>${saved.map(branch => `<option value="${e(branch.name)}" ${branch.name === state.simulationTarget ? "selected" : ""}>${e(branch.name)}</option>`).join("")}</select></label>${button("Simular push de demonstração", "simulate", "", state.busy || dirty || !saved.length)}<p id="simulation-help" class="secondary small">${dirty ? "Salve a seleção para simular" : saved.length ? "O push usa a branch indicada acima. Nenhum push real é enviado ao GitHub." : "Selecione e salve uma branch para simular."}</p>`;
 }
 function branches() {
   const dirty = isDirty(state.branches, state.selected);
@@ -325,7 +331,7 @@ async function refresh({ full = true, silent = false } = {}) {
     if (epoch === state.epoch && state.authenticated) notice(`${error.message}${silent ? " Os dados exibidos podem estar desatualizados." : ""}`, true, error.connection);
   } finally {
     if (epoch === state.epoch) { state.busy = false; if (!silent) renderView(); }
-    if (!silent && state.authenticated) restoreFocus(focused);
+    if (state.authenticated) restoreFocus(focused);
     scheduleRefresh();
   }
 }
@@ -503,7 +509,8 @@ document.addEventListener("click", async event => {
   else if (action === "scan") await queueScan(target.dataset.branch);
   else if (action === "simulate" && demo()) {
     const branch = $("#simulation-branch").value;
-    if (state.branches.some(value => value.name === branch && value.selected)) await queueScan(branch, true);
+    if (state.simulationScope === `${state.installation ?? ""}:${state.repository ?? ""}` &&
+        branch === state.simulationTarget && state.branches.some(value => value.name === branch && value.selected)) await queueScan(branch, true);
   }
   else if (action === "detail") await openDetail(target.dataset.id);
   else if (action === "copy-instructions") target.textContent = await copyInstructions(target.dataset.instructions) ? "Instruções copiadas" : "Não foi possível copiar; selecione o texto acima";
@@ -521,6 +528,14 @@ document.addEventListener("click", async event => {
 
 document.addEventListener("change", async event => {
   const target = event.target;
+  if (target.id === "simulation-branch") {
+    const saved = state.branches.find(value => value.name === target.value && value.selected);
+    if (saved) {
+      state.simulationScope = `${state.installation ?? ""}:${state.repository ?? ""}`;
+      state.simulationTarget = saved.name;
+    }
+    return;
+  }
   if (target.matches('input[type="checkbox"][data-branch]')) {
     state.selectionError = ""; state.saveError = "";
     if (target.checked && !state.selected.has(target.dataset.branch) && state.selected.size >= MAX_BRANCHES) {

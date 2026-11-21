@@ -165,7 +165,8 @@ test("switching away and back keeps a numeric demo repository ID and saved targe
 test("silent results polling updates matching rows without touching the focused search or caret", async () => {
   const app = harness(path => ({ body: path.startsWith("/api/scans") ? { items: [{ id: "new", status: "failed", branch: "stress/01" }] } : path === "/api/deliveries" ? { items: [] } : {} }));
   Object.assign(app.state, { authenticated: true, meta: { mode: "demo" }, view: "results", installation: 1, repository: 2, filter: "stress/01" });
-  const search = { value: "stress/01", selectionStart: 3, selectionEnd: 3 };
+  const search = { id: "results-search", value: "stress/01", selectionStart: 3, selectionEnd: 3,
+    focus(options) { this.focusOptions = options; }, setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; } };
   app.document.activeElement = search;
   app.nodes.set("#results-search", search);
   app.nodes.set("#main", { contains() { return true; } });
@@ -173,6 +174,7 @@ test("silent results polling updates matching rows without touching the focused 
   assert.match(app.nodes.get("#results-list").innerHTML, /Falhou/);
   assert.equal(app.nodes.get("#results-search"), search);
   assert.equal(search.selectionStart, 3);
+  assert.equal(search.focusOptions.preventScroll, true);
   assert.equal(app.state.filter, "stress/01");
   assert.ok([...app.timers.values()].some(timer => timer.delay === 15000));
 });
@@ -259,9 +261,54 @@ test("simulation sends the visibly chosen saved target", async () => {
   const app = harness(() => ({ body: {} }));
   Object.assign(app.state, { authenticated: true, meta: { mode: "demo" }, repository: 2,
     branches: [{ name: "main", selected: true }, { name: "release", selected: true }], selected: new Set(["main", "release"]) });
-  app.nodes.set("#simulation-branch", { value: "release" });
+  const selector = { id: "simulation-branch", value: "release" };
+  await app.events.get("change")({ target: selector });
+  app.nodes.set("#simulation-branch", selector);
   await app.events.get("click")({ target: { closest() { return { dataset: { action: "simulate" } }; } } });
   assert.equal(JSON.parse(app.calls[0].options.body).branch, "release");
+});
+
+test("simulated push target release survives branch-view polling and dirty selection", async () => {
+  const app = harness(path => ({
+    body: path === "/api/demo/push" ? { scan_id: "queued-scan" } :
+      path === "/api/scans/queued-scan" ? { status: "queued", components: [], findings: [], source: "demo" } :
+      path.startsWith("/api/scans?") || path === "/api/deliveries" ? { items: [] } : {},
+  }));
+  Object.assign(app.state, {
+    authenticated: true, meta: { mode: "demo" }, view: "branches", installation: 9001, repository: 9002,
+    installations: [{ id: 9001, account: "demo", status: "active" }],
+    repositories: [{ id: 9002, full_name: "demo/repo", default_branch: "main" }],
+    branches: [{ name: "main", selected: true }, { name: "release", selected: true }, { name: "draft", selected: false }],
+    selected: new Set(["main", "release"]),
+  });
+  const selector = { id: "simulation-branch", value: "release" };
+  await app.events.get("change")({ target: selector });
+  app.state.selected.add("draft");
+  await app.refresh({ full: false, silent: true });
+  assert.match(app.nodes.get("#main").innerHTML, /option value="release" selected/);
+  app.state.selected.delete("draft");
+  app.nodes.set("#simulation-branch", selector);
+  app.renderView();
+  assert.match(app.nodes.get("#main").innerHTML, /option value="release" selected/);
+  await app.events.get("click")({ target: { closest() { return { dataset: { action: "simulate" } }; } } });
+  const request = app.calls.find(call => call.path === "/api/demo/push");
+  assert.equal(JSON.parse(request.options.body).branch, "release");
+  app.state.repository = 9003;
+  app.state.branches = [{ name: "develop", selected: true }];
+  assert.match(app.simulationControls(), /option value="develop" selected/);
+});
+
+test("silent results refresh restores the focused action for the same scan row", async () => {
+  const app = harness(path => ({ body: path.startsWith("/api/scans") ? { items: [{ id: "same", status: "completed" }] } : { items: [] } }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "demo" }, view: "results", installation: 1, repository: 2 });
+  app.nodes.set("#main", { contains() { return true; } });
+  const oldAction = { dataset: { action: "detail", id: "same" } };
+  const updatedAction = { dataset: { action: "detail", id: "same" }, focus(options) { this.focusOptions = options; } };
+  app.document.activeElement = oldAction;
+  app.document.querySelectorAll = selector => selector === "[data-action]" ? [updatedAction] : [];
+  await app.refresh({ full: false, silent: true });
+  assert.match(app.nodes.get("#results-list").innerHTML, /Ver análise/);
+  assert.equal(updatedAction.focusOptions.preventScroll, true);
 });
 
 test("open pending report polls in place to completion, announces and stops", async () => {
