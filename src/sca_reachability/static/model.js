@@ -147,7 +147,9 @@ export function transitiveSteps(finding) {
   if (!Array.isArray(path)) return [];
   return path.filter(step => step && typeof step.file === "string" && step.file &&
     (step.line === null || Number.isInteger(step.line) && step.line > 0) && typeof step.specifier === "string")
-    .slice(0, 64).map(step => ({ ...step, url: typeof step.package === "string" && typeof step.version === "string"
+    .slice(0, 64).map(step => ({ ...step,
+      originLabel: step.kind === "grunt" ? "Gruntfile" : step.kind === "npm_script" ? `script npm · ${typeof step.label === "string" ? step.label : "scripts"}` : "Código do repositório",
+      url: typeof step.package === "string" && typeof step.version === "string"
       ? `https://www.npmjs.com/package/${encodeURIComponent(step.package)}/v/${encodeURIComponent(step.version)}?activeTab=code` : null }));
 }
 

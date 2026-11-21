@@ -824,3 +824,20 @@ test("public report renders a safe transitive path and decided filter", async ()
   assert.doesNotMatch(markup, /O código chama o alvo/);
   assert.match(markup, /Existe um caminho estático de importações/);
 });
+
+test("tooling paths label Gruntfile and npm scripts without trusting metadata", () => {
+  const app = harness(() => ({}));
+  app.state.meta = { mode: "public" };
+  for (const [kind, label, expected] of [["grunt", "Gruntfile", /<strong>Gruntfile<\/strong>/],
+    ["npm_script", "scripts.<test>", /script npm · scripts\.&lt;test&gt;/]]) {
+    const html = app.findingMarkup({ ...evidenceFinding, reachability: "reachable", reachability_scope: "dev_tooling",
+      reachability_analysis: { granularity: "import", transitive_path: [
+        { package: null, version: null, file: "package.json", line: 3, specifier: "a", kind, label },
+        { package: "a", version: "1.0.0", file: "bin/a.js", line: null, specifier: "" },
+      ] } }, evidenceScan);
+    assert.match(html, expected);
+    assert.match(html, /Alcançável só em testes\/ferramentas/);
+    assert.doesNotMatch(html, /scripts\.<test>/);
+    assert.doesNotMatch(html, /O código chama o alvo/);
+  }
+});

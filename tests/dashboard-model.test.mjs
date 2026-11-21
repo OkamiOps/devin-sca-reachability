@@ -25,6 +25,8 @@ test("transitive paths encode npm links and preserve import-level semantics", ()
   assert.equal(steps.length, 3);
   assert.equal(steps[1].url, "https://www.npmjs.com/package/%40scope%2Fa/v/1.0.0?activeTab=code");
   assert.equal(steps[0].url, null);
+  assert.equal(transitiveSteps({ reachability_analysis: { transitive_path: [{ ...steps[0], kind: "grunt" }] } })[0].originLabel, "Gruntfile");
+  assert.equal(transitiveSteps({ reachability_analysis: { transitive_path: [{ ...steps[0], kind: "npm_script", label: "scripts.test" }] } })[0].originLabel, "script npm · scripts.test");
   assert.match(findingPresentation(finding).headline, /importações/);
   assert.doesNotMatch(findingPresentation(finding).headline, /Chamada encontrada/);
   assert.match(findingPresentation(finding).caveat, /não comprova chamada/);

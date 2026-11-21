@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 import json
 import posixpath
 import re
+import shlex
 from urllib.parse import quote
 
 from sca_reachability.models import ReachabilityStatus
@@ -24,9 +25,127 @@ class Load:
     file: str
     line: int
     mode: str = 'require'
+    entry: str | None = None
+    kind: str = 'repository'
+    scope: str | None = None
+    label: str | None = None
+    binary: str | None = None
 
 
-def javascript_loads(content, path):
+def repository_entries(nodes, coverage, manifest):
+    entries, issues = {}, []
+    base = posixpath.dirname(manifest)
+    for source in _scope(coverage.files, manifest):
+        if posixpath.dirname(source.path) != base:
+            continue
+        if posixpath.basename(source.path).lower() == 'gruntfile.js':
+            masked, _ = javascript_mask(source.content)
+            if re.search(r'\b(?:var|let|const)\s+grunt\b|\bgrunt\s*=(?!=)', masked):
+                issues.append('Objeto grunt reatribuído em ' + source.path)
+                continue
+            for match in re.finditer(r'\bgrunt\s*\.\s*loadNpmTasks\s*\(', masked):
+                if match.start() and masked[match.start() - 1] in '.$':
+                    issues.append('Chamada Grunt indireta em ' + source.path)
+                    continue
+                end = _call_end(masked, match.end())
+                arg = source.content[match.end():end].strip() if end is not None else ''
+                if not re.fullmatch(r"""(['"])[@a-zA-Z0-9_./~-]+\1""", arg):
+                    issues.append('loadNpmTasks não literal em ' + source.path)
+                    continue
+                name = arg[1:-1]
+                path = _npm_resolve(nodes, '', name)
+                if path is None or nodes[path].name != name:
+                    issues.append('Pacote Grunt ausente do lockfile: ' + name)
+                    continue
+                entries.setdefault(path, []).append(Load(name, source.path, _line_at(source.content, match.start()),
+                    'grunt', kind='grunt', scope='dev_tooling', label='Gruntfile'))
+        if posixpath.basename(source.path) != 'package.json':
+            continue
+        try:
+            scripts = json.loads(source.content).get('scripts', {})
+            if not isinstance(scripts, dict):
+                raise ValueError()
+        except (ValueError, AttributeError):
+            issues.append('Scripts inválidos em ' + source.path)
+            continue
+        for name, command in scripts.items():
+            if not isinstance(command, str):
+                issues.append('Script não literal: ' + str(name))
+                continue
+            segments = re.split(r'&&|;', command)
+            if ((("'" in command or '"' in command) and re.search(r'[;&]', command))
+                    or any(re.search(r'[$\x60|&<>\\\n\r(){}*?~#]', segment) for segment in segments)):
+                issues.append('Shell não modelado em scripts.' + name)
+                continue
+            for segment in segments:
+                try:
+                    tokens = shlex.split(segment)
+                except ValueError:
+                    issues.append('Aspas não resolvidas em scripts.' + name)
+                    continue
+                if not tokens:
+                    issues.append('Comando vazio em scripts.' + name)
+                    continue
+                binary, explicit = tokens[0], None
+                if binary == 'node' and len(tokens) > 1 and tokens[1].startswith('node_modules/'):
+                    explicit = tokens[1]
+                    candidates = [node for node in nodes.values()
+                                  if explicit.startswith(node.lock_path + '/')]
+                    candidates.sort(key=lambda node: -len(node.lock_path))
+                    candidates = candidates[:1]
+                else:
+                    if not re.fullmatch(r'[\w.-]+', binary):
+                        issues.append('Invocação não simples em scripts.' + name)
+                        continue
+                    candidates = [node for node in nodes.values()
+                                  if node.lock_path == 'node_modules/' + node.name and binary in node.entry_commands]
+                if len(candidates) != 1:
+                    if candidates:
+                        issues.append(f'Bin {binary} ambíguo em scripts.{name}: ' +
+                                      ', '.join(node.name for node in candidates))
+                    elif explicit:
+                        issues.append('Bin explícito não resolvido em scripts.' + name)
+                    continue
+                node = candidates[0]
+                positions = list(re.finditer(re.escape(json.dumps(name)) + r'\s*:', source.content))
+                line = _line_at(source.content, positions[0].start()) if len(positions) == 1 else None
+                entry = explicit[len(node.lock_path) + 1:] if explicit else None
+                entries.setdefault(node.lock_path, []).append(Load(node.name, source.path, line, 'bin', entry,
+                    'npm_script', 'test_only' if name == 'test' else 'dev_tooling', 'scripts.' + name,
+                    None if explicit else binary))
+    return entries, tuple(issues)
+
+
+def expand_entry(component, load, sources):
+    if load.mode not in ('grunt', 'bin'):
+        return [load]
+    source = sources.get(component)
+    if load.mode == 'grunt':
+        keywords = source.metadata.get('keywords') or ()
+        if not isinstance(keywords, (list, tuple, str)):
+            raise PackageUnknown('grunt_tasks', 'keywords Grunt inválido: ' + component.name)
+        if 'gruntcollection' in keywords:
+            raise PackageUnknown('grunt_collection', 'Coleção Grunt recursiva não modelada: ' + component.name)
+        tasks = sorted(path for path in source.files if posixpath.dirname(path) == 'tasks'
+                       and path.endswith('.js') and not posixpath.basename(path).startswith('.'))
+        if not tasks:
+            raise PackageUnknown('grunt_tasks', 'Diretório tasks sem entradas JavaScript modeladas: ' + component.name)
+        return [replace(load, mode='file', entry=path) for path in tasks]
+    bins = source.metadata.get('bin', {})
+    if isinstance(bins, str):
+        bins = {component.name.rsplit('/', 1)[-1]: bins}
+    if not isinstance(bins, dict):
+        raise PackageUnknown('bin', 'bin inválido: ' + component.name)
+    if load.binary:
+        target = bins.get(load.binary)
+    else:
+        target = load.entry if load.entry in [posixpath.normpath(value) for value in bins.values() if isinstance(value, str)] else None
+    if not isinstance(target, str):
+        raise PackageUnknown('bin', 'bin não resolvido inequivocamente: ' + component.name)
+    return [replace(load, mode='bin_file', entry=target)]
+
+
+def javascript_mask(content):
     tokens = re.compile(_JS_TOKEN.pattern + r'|(?P<regex>/(?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^/[\\\n])++/[a-z]*)', re.S)
     uncertain = False
     chars = list(content)
@@ -36,7 +155,11 @@ def javascript_loads(content, path):
             chars[token.start():token.end()] = re.sub(r'[^\n]', ' ', token.group())
         elif token.group().startswith('`') and '${' in token.group():
             uncertain = True
-    masked = _js_mask(''.join(chars))
+    return _js_mask(''.join(chars)), uncertain
+
+
+def javascript_loads(content, path):
+    masked, uncertain = javascript_mask(content)
     shadowed = bool(re.search(r'\b(?:var|let|const)\s+require\b|\brequire\s*=(?!=)|\bfunction[^\n{]*\([^)]*\brequire\b', masked))
     uncertain |= shadowed or bool(re.search(r'\b(?:eval|Function|createRequire|loadNpmTasks)\b|\bmodule\s*\.\s*(?:_load|require)\b', masked))
     loads, consumed = [], set()
@@ -159,12 +282,30 @@ class PackageTrace:
         self.facts[key] = source, loads, uncertain
         return self.facts[key]
 
-    def walk(self, component, specifier, mode):
-        key = (component.manifest_path, component.lock_path, specifier, mode)
+    def walk(self, component, specifier, mode, forced_entry=None):
+        key = (component.manifest_path, component.lock_path, specifier, mode, forced_entry)
         if key in self.walks:
             return self.walks[key]
         source, loads, uncertain = self.facts_for(component)
-        entry = resolve_entry(source, specifier, component.name, mode)
+        if forced_entry is not None:
+            entry = posixpath.normpath(forced_entry)
+            if entry.startswith(('/', '../')) or entry == '..' or '\\' in entry or entry not in source.files:
+                raise PackageUnknown('entry', 'Arquivo de entrada explícita ausente ou inseguro')
+            data = source.files[entry]
+            if len(data) > 512 * 1024:
+                raise PackageUnknown('byte_limit', 'Entrada explícita acima de 512 KiB')
+            if mode == 'bin_file' and data.startswith(b'#!') and not re.match(br'#![^\n]*\bnode(?:\s|$)', data):
+                raise PackageUnknown('entry', 'Interpretador do bin não modelado')
+            if entry not in loads:
+                if not re.match(br'#![^\n]*\bnode(?:\s|$)', data):
+                    raise PackageUnknown('entry', 'bin não JavaScript ou interpretador não modelado')
+                try:
+                    loads[entry], dynamic = javascript_loads(data.decode('utf-8'), entry)
+                    uncertain |= dynamic
+                except UnicodeError:
+                    raise PackageUnknown('coverage', 'bin não UTF-8') from None
+        else:
+            entry = resolve_entry(source, specifier, component.name, mode)
         queue, seen, external, gaps = deque([(entry, ())]), {entry}, [], []
         while queue:
             path, trail = queue.popleft()
@@ -191,7 +332,7 @@ class PackageTrace:
 
     def chain(self, chain, entry_load, index=0):
         component = chain[index]
-        source, all_loads, uncertain, external, entry = self.walk(component, entry_load.specifier, entry_load.mode)
+        source, all_loads, uncertain, external, entry = self.walk(component, entry_load.specifier, entry_load.mode, entry_load.entry)
         if index == len(chain) - 1:
             terminal = _hop(component, Load('', entry, None), 'entry')
             return 'reachable', (terminal,), None
@@ -231,7 +372,7 @@ def trace_transitives(components, results, coverage, sources):
     for component, row in zip(components, results, strict=True):
         if component.ecosystem != 'npm' or component.dependency_relation != 'transitive' or not row:
             continue
-        if row[0].status != ReachabilityStatus.UNKNOWN:
+        if row[0].status not in (ReachabilityStatus.UNKNOWN, ReachabilityStatus.UNREACHABLE):
             continue
         nodes = by_manifest[component.manifest_path]
         target = component.lock_path
@@ -248,6 +389,11 @@ def trace_transitives(components, results, coverage, sources):
                     if parent not in ancestors:
                         ancestors.add(parent)
                         queue.append(parent)
+            extra_entries, entry_issues = repository_entries(nodes, coverage, component.manifest_path)
+            entry_uncertain = bool(entry_issues)
+            if row[0].status == ReachabilityStatus.UNREACHABLE and not entry_uncertain and not ancestors.intersection(extra_entries):
+                continue
+            roots.extend(node for key, node in nodes.items() if key in extra_entries and node not in roots)
             root_loads, repo_uncertain = {}, False
             for source in _scope(coverage.files, component.manifest_path):
                 if source.path.endswith(JS_SUFFIXES):
@@ -260,7 +406,9 @@ def trace_transitives(components, results, coverage, sources):
             roots.sort(key=lambda root: not any(evidence_scope(load.file) == 'production' and not root.dev
                                                for load in root_loads.get(root.name, ())))
             unknown = ('no_static_path', 'Não foi comprovado um caminho estático completo')
-            decided, path, scope, tested, blocked = None, (), None, 0, False
+            decided, path, scope, tested, blocked = None, (), None, 0, entry_uncertain
+            if entry_uncertain:
+                unknown = ('entry_dynamic', '; '.join(entry_issues[:3]))
 
             def paths(node, trail):
                 nonlocal tested, blocked
@@ -287,12 +435,19 @@ def trace_transitives(components, results, coverage, sources):
                             continue
                         entries = sorted(root_loads.get(root.name, ()),
                                          key=lambda load: evidence_scope(load.file) != 'production')
+                        entries += extra_entries.get(root.lock_path, [])
                         if not entries:
                             blocked = True
                             unknown = ('cli', f'Entrada Grunt/CLI ou ancestral sem importação literal modelada: {root.name}')
                             continue
                         for chain in paths(root, [root]):
-                            for load in entries:
+                            expanded = []
+                            for original in entries:
+                                try:
+                                    expanded.extend(expand_entry(root, original, sources))
+                                except PackageUnknown as error:
+                                    blocked, unknown = True, (error.code, str(error))
+                            for load in expanded:
                                 # Resolution must select the exact installed version at every edge.
                                 if any(_npm_resolve(nodes, parent.lock_path, child.name) != child.lock_path
                                        for parent, child in zip(chain, chain[1:])):
@@ -305,11 +460,12 @@ def trace_transitives(components, results, coverage, sources):
                                 if status == 'reachable' and len(steps) > 63:
                                     status, reason = 'unknown', ('path_limit', 'caminho de evidência acima de 64 etapas')
                                 if status == 'reachable':
-                                    scope = evidence_scope(load.file)
+                                    scope = load.scope or evidence_scope(load.file)
                                     if root.dev and scope == 'production':
                                         scope = 'dev_tooling'
                                     path = ({'package': None, 'version': None, 'file': load.file,
-                                             'line': load.line, 'specifier': load.specifier, 'kind': 'repository', 'url': None},) + steps
+                                             'line': load.line, 'specifier': load.specifier, 'kind': load.kind,
+                                             'label': load.label, 'url': None},) + steps
                                     decided = status
                                     break
                                 if status != 'unreachable':
@@ -327,6 +483,8 @@ def trace_transitives(components, results, coverage, sources):
                     unknown = ('repository_dynamic', 'Cargas não resolvidas ou versões não modeladas no repositório impedem prova negativa')
                 else:
                     decided = 'unreachable'
+            if not decided and entry_uncertain and row[0].status == ReachabilityStatus.UNREACHABLE:
+                unknown = ('entry_dynamic', '; '.join(entry_issues[:3]))
             cache[decision_key] = decided, path, scope, unknown
         decided, path, scope, unknown = cache[decision_key]
         for index, result in enumerate(row):
@@ -340,6 +498,6 @@ def trace_transitives(components, results, coverage, sources):
             else:
                 locations = ', '.join(f'{item.path}:{item.line}' for item in result.evidence[:6])
                 note = (f'Via {locations}. ' if locations else '') + unknown[1]
-                row[index] = replace(result, reason=f'{note}. Desconhecido não significa seguro.',
+                row[index] = replace(result, status=ReachabilityStatus.UNKNOWN, reason=f'{note}. Desconhecido não significa seguro.',
                     dependency_note=note, transitive_unknown_reason=unknown[0])
     return results
