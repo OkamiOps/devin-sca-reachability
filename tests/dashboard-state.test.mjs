@@ -124,6 +124,24 @@ test("network recovery resumes a running scan instead of retrying it as failed",
   assert.ok(app.calls.every(call => !call.path.endsWith("/retry")));
 });
 
+test("public verification cannot switch scope with an unsaved branch draft, including during the request", async () => {
+  let resolve;
+  const app = harness(() => new Promise(r => { resolve = r; }));
+  app.state.authenticated = true; app.state.installation = 9003; app.state.repository = 1;
+  app.state.branches = [{ name: "main", selected: true }]; app.state.selected = new Set(["release"]);
+  app.state.publicFlow.url = "a/b";
+  await app.verifyPublicRepository();
+  assert.equal(app.calls.length, 0); assert.equal(app.state.repository, 1);
+  assert.match(app.nodes.get("#notice").textContent, /Salve ou descarte/);
+  app.state.selected = new Set(["main"]);
+  const verification = app.verifyPublicRepository();
+  app.state.selected = new Set(["release"]);
+  resolve({ body: { installation_id: 9003, repository: { id: 2 } } });
+  await verification;
+  assert.equal(app.state.repository, 1);
+  assert.deepEqual([...app.state.selected], ["release"]);
+});
+
 test("results search finds advisory IDs and package names, including clean inventories", () => {
   const app = harness(() => ({}));
   app.state.scans = [

@@ -253,6 +253,9 @@ function paintPublicRepository() {
   if (card) card.innerHTML = publicRepositoryContent();
 }
 async function verifyPublicRepository() {
+  if (state.busy || isDirty(state.branches, state.selected)) {
+    notice("Salve ou descarte as alterações de branches antes de verificar outro repositório.", true); return;
+  }
   const flow = state.publicFlow;
   const epoch = ++state.publicEpoch;
   clearTimeout(state.publicTimer);
@@ -262,6 +265,10 @@ async function verifyPublicRepository() {
   try {
     const result = await api("/api/public/repositories", { method: "POST", body: { url: flow.url } });
     if (epoch !== state.publicEpoch || !state.authenticated) return;
+    if (state.busy || isDirty(state.branches, state.selected)) {
+      flow.phase = "idle";
+      notice("Salve ou descarte as alterações de branches e verifique o repositório novamente.", true); return;
+    }
     flow.registration = result; flow.phase = "ready";
     state.installation = result.installation_id; state.repository = result.repository.id;
     await refresh();
