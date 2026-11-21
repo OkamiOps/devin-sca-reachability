@@ -2,12 +2,14 @@ from dataclasses import dataclass
 from hashlib import sha256
 import hmac
 import json
+import logging
 import re
 import secrets
 import threading
 import time
 from typing import Callable
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from fastapi import HTTPException, Request
 from starlette.responses import JSONResponse
@@ -19,6 +21,7 @@ from sca_reachability.server.db import Database, iso_now
 SESSION_COOKIE = "sca_session"
 SESSION_TTL_SECONDS = 8 * 60 * 60
 SIGNATURE_RE = re.compile(r"^sha256=[0-9a-fA-F]{64}$")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -108,14 +111,45 @@ def _origin_tuple(value: str) -> tuple[str, str] | None:
         return None
 
 
+def demo_login_rejection_headers(settings: Settings, category: str) -> dict[str, str] | None:
+    if settings.mode != "demo":
+        return None
+    correlation_id = uuid4().hex
+    logger.warning(
+        "demo_login_rejected category=%s correlation_id=%s",
+        category,
+        correlation_id,
+    )
+    return {"X-SCA-Diagnostic-ID": correlation_id}
+
+
 def ensure_same_origin(
-    request: Request, settings: Settings, *, required: bool = False
+    request: Request,
+    settings: Settings,
+    *,
+    required: bool = False,
+    diagnose_login_rejection: bool = False,
 ) -> None:
     origin = request.headers.get("origin")
     if not origin:
         if required:
-            raise HTTPException(status_code=403, detail="Origin validation failed")
+            headers = (
+                demo_login_rejection_headers(settings, "origin_missing")
+                if diagnose_login_rejection else None
+            )
+            raise HTTPException(
+                status_code=403, detail="Origin validation failed", headers=headers
+            )
         return
+    actual = _origin_tuple(origin)
+    if actual is None:
+        headers = (
+            demo_login_rejection_headers(settings, "origin_malformed")
+            if diagnose_login_rejection else None
+        )
+        raise HTTPException(
+            status_code=403, detail="Origin validation failed", headers=headers
+        )
     configured = settings.public_origin
     if configured:
         expected = _origin_tuple(configured)
@@ -123,8 +157,14 @@ def ensure_same_origin(
         expected = _origin_tuple(
             f"{request.url.scheme}://{request.headers.get('host', '')}"
         )
-    if expected is None or _origin_tuple(origin) != expected:
-        raise HTTPException(status_code=403, detail="Origin validation failed")
+    if expected is None or actual != expected:
+        headers = (
+            demo_login_rejection_headers(settings, "origin_mismatch")
+            if diagnose_login_rejection else None
+        )
+        raise HTTPException(
+            status_code=403, detail="Origin validation failed", headers=headers
+        )
 
 
 def require_mutation_protection(
@@ -139,9 +179,16 @@ def require_mutation_protection(
 
 
 def validate_login_request(request: Request, settings: Settings) -> None:
-    if request.headers.get("x-sca-request") != "1":
-        raise HTTPException(status_code=403, detail="Request validation failed")
-    ensure_same_origin(request, settings, required=True)
+    marker = request.headers.get("x-sca-request")
+    if marker != "1":
+        category = "request_marker_missing" if marker is None else "request_marker_invalid"
+        headers = demo_login_rejection_headers(settings, category)
+        raise HTTPException(
+            status_code=403, detail="Request validation failed", headers=headers
+        )
+    ensure_same_origin(
+        request, settings, required=True, diagnose_login_rejection=True
+    )
 
 
 def verify_webhook_signature(
