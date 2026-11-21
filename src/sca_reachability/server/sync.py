@@ -85,7 +85,7 @@ def _collect(github: GitHubAdapter, allowed: frozenset[int]) -> list[dict]:
     return collected
 
 
-def _apply(database: Database, settings: Settings, installations: list[dict]) -> None:
+def _apply(database: Database, settings: Settings, installations: list[dict], *, partial: bool = False) -> None:
     allowed = allowed_installation_ids(settings)
     present = {item["id"] for item in installations}
     now = iso_now()
@@ -134,7 +134,7 @@ def _apply(database: Database, settings: Settings, installations: list[dict]) ->
                 (installation_id,),
             ).fetchall()
             for row in previous:
-                if row["id"] not in repository_ids:
+                if row["id"] not in repository_ids and not partial:
                     revoke_repository(connection, installation_id, row["id"])
 
             for repository in installation["repositories"]:

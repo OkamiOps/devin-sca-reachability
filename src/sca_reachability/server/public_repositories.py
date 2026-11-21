@@ -3,6 +3,7 @@ import time
 
 from sca_reachability.server.errors import PublicError, ScanError
 from sca_reachability.server.public_github import normalize_repository
+from sca_reachability.server.service import cancel_scope
 from sca_reachability.server.sync import _apply, _read_installations
 
 
@@ -40,12 +41,7 @@ class PublicRepositories:
             if requested is not None and requested not in branches:
                 raise PublicError('invalid_url', 'A branch da URL não existe. Use a URL principal do repositório.')
             record = dict(id=repo_id, full_name=name, default_branch=default, branches=sorted(branches))
-            records = []
-            with self.database.connection() as connection:
-                for row in connection.execute('SELECT * FROM repositories WHERE installation_id = 9003 AND active = 1 AND id != ?', (repo_id,)):
-                    names = [b['name'] for b in connection.execute('SELECT name FROM branches WHERE installation_id = 9003 AND repository_id = ?', (row['id'],))]
-                    records.append(dict(id=row['id'], full_name=row['full_name'], default_branch=row['default_branch'], branches=names))
-            _apply(self.database, self.settings, [dict(id=9003, account='Repositórios públicos', status='active', repositories=records + [record])])
+            _apply(self.database, self.settings, [dict(id=9003, account='Repositórios públicos', status='active', repositories=[record])], partial=True)
             self.github.repositories[repo_id] = name
             return dict(installation_id=9003, repository=record, branches=sorted(branches), default_branch=default,
                         selected_branch=requested or default)
@@ -54,19 +50,19 @@ class PublicRepositories:
         with self.lock:
             if len(self.github.repositories) > MAX_REPOSITORIES:
                 raise PublicError('repository_cap', 'Limite de 25 repositórios atingido.', 409)
-            previous = {}
-            with self.database.connection() as connection:
-                for row in connection.execute('SELECT * FROM repositories WHERE installation_id = 9003 AND active = 1'):
-                    branches = [b['name'] for b in connection.execute('SELECT name FROM branches WHERE installation_id = 9003 AND repository_id = ?', (row['id'],))]
-                    previous[row['id']] = dict(id=row['id'], full_name=row['full_name'], default_branch=row['default_branch'], branches=branches)
-            records = []
+            records, unavailable = [], []
             for repo_id, name in self.github.repositories.items():
                 try:
                     branches, default = self.github._refs(name)
                 except ScanError as error:
-                    if getattr(error, 'code', None) != 'private_or_missing' and repo_id in previous:
-                        records.append(previous[repo_id])
+                    if getattr(error, 'code', None) == 'private_or_missing':
+                        unavailable.append(repo_id)
                     continue
                 records.append(dict(id=repo_id, full_name=name, default_branch=default, branches=sorted(branches)))
-            _apply(self.database, self.settings, [dict(id=9003, account='Repositórios públicos', status='active', repositories=records)])
+            if records:
+                _apply(self.database, self.settings, [dict(id=9003, account='Repositórios públicos', status='active', repositories=records)], partial=True)
+            with self.database.transaction() as connection:
+                for repo_id in unavailable:
+                    connection.execute('UPDATE repositories SET active = 0 WHERE installation_id = 9003 AND id = ?', (repo_id,))
+                    cancel_scope(connection, installation_id=9003, repository_id=repo_id)
             return _read_installations(self.database, self.settings)

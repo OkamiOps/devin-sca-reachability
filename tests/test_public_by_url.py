@@ -167,6 +167,36 @@ class PublicByURLTests(unittest.TestCase):
             branches = client.get(f"/api/installations/9003/repositories/{healthy['id']}/branches", headers=headers).json()['items']
             self.assertEqual({b['name'] for b in branches}, {'main', 'release'})
 
+    def test_private_repository_keeps_saved_selection_until_it_returns(self):
+        headers = {'Authorization': 'Bearer '+'t'*32}
+        with tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
+            adapter = client.app.state.worker.github
+            refs_result = ({'main': 'a'*40, 'release': 'b'*40}, 'main')
+            with patch.object(adapter, '_refs', return_value=refs_result):
+                repo = client.post('/api/public/repositories', json={'url': 'a/repo'}, headers=headers).json()['repository']
+                client.post('/api/public/repositories', json={'url': 'a/healthy'}, headers=headers).raise_for_status()
+                scope = f"/api/installations/9003/repositories/{repo['id']}"
+                self.assertEqual(client.put(scope+'/branches', json={'branches': ['release']}, headers=headers).status_code, 200)
+                queued = client.post(f"/api/public/repositories/{repo['id']}/scan", json={'branch': 'release'}, headers=headers)
+                self.assertEqual(queued.status_code, 202, queued.text)
+                scan_id = queued.json()['scan_id']
+            def private_refs(name):
+                if name == 'a/repo':
+                    raise PublicError('private_or_missing', 'Unavailable', 404)
+                return refs_result
+            with patch.object(adapter, '_refs', side_effect=private_refs):
+                self.assertEqual(client.post('/api/installations/sync', headers=headers).status_code, 200)
+            client.post('/api/public/repositories', json={'url': 'a/new'}, headers=headers).raise_for_status()
+            with client.app.state.database.connection() as connection:
+                self.assertEqual(connection.execute('SELECT active FROM repositories WHERE id = ?', (repo['id'],)).fetchone()[0], 0)
+                selected = [r['name'] for r in connection.execute('SELECT name FROM branches WHERE repository_id = ? AND selected = 1', (repo['id'],))]
+                self.assertEqual(selected, ['release'])
+                self.assertEqual(connection.execute('SELECT status FROM jobs WHERE scan_id = ?', (scan_id,)).fetchone()[0], 'cancelled')
+            with patch.object(adapter, '_refs', return_value=refs_result):
+                self.assertEqual(client.post('/api/installations/sync', headers=headers).status_code, 200)
+            branches = client.get(scope+'/branches', headers=headers).json()['items']
+            self.assertEqual([b['name'] for b in branches if b['selected']], ['release'])
+
     def test_public_scan_cannot_select_a_twenty_first_monitored_branch(self):
         headers = {'Authorization': 'Bearer '+'t'*32}
         with tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
