@@ -5,13 +5,29 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "devin-sca-reachability"
 version = "0.1.0"
-description = "Offline scaffold for dependency vulnerability reachability analysis"
+description = "Dependency vulnerability reporting with conservative reachability status"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+server = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.34,<1",
+  "httpx>=0.27,<1",
+  "PyJWT[crypto]>=2.10,<3",
+  "packaging>=24,<27",
+]
+ai = [
+  "openai>=1.68.2,<3",
+]
+
 [project.scripts]
 sca-reachability = "sca_reachability.cli:main"
+sca-reachability-serve = "sca_reachability.server.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+sca_reachability = ["static/*.html", "static/*.js", "static/*.css"]
