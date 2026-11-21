@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+import re
 import tempfile
 import time
 import unittest
@@ -413,6 +414,278 @@ class ServerTests(unittest.TestCase):
         with app.state.database.transaction() as connection:
             connection.execute("UPDATE sessions SET expires_at = 0")
         self.assertEqual(client.get("/api/installations").status_code, 401)
+
+    def test_demo_login_rejections_log_safe_categories_with_correlated_headers(self):
+        _, client = self.client(demo=True)
+        cookie_canary = "cookie-canary"
+        marker_canary = "marker-canary"
+        origin_canary = "https://origin-canary.invalid"
+        token_canary = "token-canary"
+        cases = (
+            (
+                "request_marker_missing",
+                {"Origin": "http://testserver", "Cookie": f"sca_session={cookie_canary}"},
+                "Request validation failed",
+                403,
+            ),
+            (
+                "request_marker_invalid",
+                {
+                    "Origin": "http://testserver",
+                    "X-SCA-Request": marker_canary,
+                    "Cookie": f"sca_session={cookie_canary}",
+                },
+                "Request validation failed",
+                403,
+            ),
+            (
+                "origin_missing",
+                {"X-SCA-Request": "1", "Cookie": f"sca_session={cookie_canary}"},
+                "Origin validation failed",
+                403,
+            ),
+            (
+                "origin_malformed",
+                {
+                    "Origin": origin_canary + "/path",
+                    "X-SCA-Request": "1",
+                    "Cookie": f"sca_session={cookie_canary}",
+                },
+                "Origin validation failed",
+                403,
+            ),
+            (
+                "origin_mismatch",
+                {
+                    "Origin": origin_canary,
+                    "X-SCA-Request": "1",
+                    "Cookie": f"sca_session={cookie_canary}",
+                },
+                "Origin validation failed",
+                403,
+            ),
+            (
+                "token_rejected",
+                {
+                    "Origin": "http://testserver",
+                    "X-SCA-Request": "1",
+                    "Cookie": f"sca_session={cookie_canary}",
+                },
+                "Authentication required",
+                401,
+            ),
+        )
+        diagnostic_ids = []
+        with self.assertLogs("sca_reachability.server.security", level="WARNING") as captured:
+            for category, headers, detail, status in cases:
+                response = client.post(
+                    "/api/session", json={"token": token_canary}, headers=headers
+                )
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(response.json()["detail"], detail)
+                diagnostic_id = response.headers.get("X-SCA-Diagnostic-ID")
+                self.assertRegex(diagnostic_id or "", re.compile(r"^[0-9a-f]{32}$"))
+                self.assertNotIn(diagnostic_id, response.text)
+                self.assertIn(f"category={category}", captured.output[-1])
+                self.assertIn(f"correlation_id={diagnostic_id}", captured.output[-1])
+                if category != "origin_mismatch":
+                    self.assertNotIn("scheme_match=", captured.output[-1])
+                diagnostic_ids.append(diagnostic_id)
+        self.assertEqual(len(set(diagnostic_ids)), len(cases))
+        self.assertEqual(len(captured.records), len(cases))
+        for sensitive_value in (
+            cookie_canary, marker_canary, origin_canary, token_canary,
+        ):
+            self.assertNotIn(sensitive_value, "\n".join(captured.output))
+
+        with self.assertNoLogs("sca_reachability.server.security", level="WARNING"):
+            valid = client.post(
+                "/api/session", json={"token": "local-demo"}, headers=CSRF
+            )
+        self.assertEqual(valid.status_code, 200)
+        self.assertEqual(valid.json(), {"authenticated": True})
+        self.assertNotIn("X-SCA-Diagnostic-ID", valid.headers)
+
+    def test_demo_origin_mismatch_logs_only_classified_components(self):
+        self.settings = replace(self.settings, public_origin="https://configured-canary.invalid")
+        cases = (
+            ("http://configured-canary.invalid", "configured", "false", "true", "true"),
+            ("https://configured-canary.invalid:443", "configured", "true", "true", "false"),
+            ("https://sub-canary.devinapps.com", "devinapps_subdomain", "true", "false", "true"),
+            ("https://devin.ai", "devin_ai", "true", "false", "true"),
+            ("https://sub-canary.devin.ai", "devin_ai", "true", "false", "true"),
+            ("https://localhost", "localhost_or_loopback", "true", "false", "true"),
+            ("https://127.0.0.2", "localhost_or_loopback", "true", "false", "true"),
+            ("https://[::1]", "localhost_or_loopback", "true", "false", "true"),
+            ("https://host-canary.invalid:8443", "other", "true", "false", "false"),
+            ("https://devinapps.com", "other", "true", "false", "true"),
+            ("https://devin.ai.host-canary.invalid", "other", "true", "false", "true"),
+            ("https://host-canary.invalid:bad-port", "other", "true", "false", "false"),
+        )
+        for origin, kind, scheme_match, host_match, port_match in cases:
+            with self.subTest(origin=origin):
+                _, client = self.client(demo=True)
+                headers = {
+                    "Origin": origin, "X-SCA-Request": "1",
+                    "Host": origin.split("://", 1)[1],
+                    "X-Forwarded-Host": origin.split("://", 1)[1],
+                    "Cookie": "sca_session=cookie-canary",
+                }
+                with self.assertLogs("sca_reachability.server.security", level="WARNING") as captured:
+                    response = client.post("/api/session", json={"token": "token-canary"}, headers=headers)
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.json(), {"detail": "Origin validation failed"})
+                self.assertEqual(len(captured.records), 1)
+                self.assertNotIn("canary", captured.records[0].getMessage())
+                fields = dict(part.split("=", 1) for part in captured.records[0].getMessage().split()[1:])
+                self.assertEqual(fields, {
+                    "category": "origin_mismatch",
+                    "correlation_id": response.headers["X-SCA-Diagnostic-ID"],
+                    "scheme_match": scheme_match, "host_match": host_match,
+                    "port_match": port_match, "origin_scheme": origin.split(":", 1)[0],
+                    "origin_host_kind": kind, "host_header_kind": kind,
+                    "x_forwarded_host_kind": kind,
+                })
+                for sensitive in (origin, "canary", "127.0.0.2", "::1", "8443", "443"):
+                    self.assertNotIn(sensitive, captured.records[0].getMessage().split(" scheme_match=", 1)[1])
+
+        _, client = self.client(demo=True)
+        for forwarded in (None, "configured-canary.invalid, proxy-canary.invalid"):
+            headers = {"Origin": "https://origin-canary.invalid", "X-SCA-Request": "1"}
+            if forwarded is not None:
+                headers["X-Forwarded-Host"] = forwarded
+            with self.assertLogs("sca_reachability.server.security", level="WARNING") as captured:
+                response = client.post("/api/session", json={"token": ""}, headers=headers)
+            self.assertEqual(response.status_code, 403)
+            message = captured.records[0].getMessage()
+            self.assertIn("host_header_kind=other", message)
+            self.assertNotIn("canary", message)
+            if forwarded is None:
+                self.assertNotIn("x_forwarded_host_kind=", message)
+            else:
+                self.assertIn("x_forwarded_host_kind=other", message)
+
+        with self.assertLogs("sca_reachability.server.security", level="WARNING") as captured:
+            response = client.post("/api/session", json={"token": ""}, headers={
+                "Origin": "https://origin-canary.invalid", "X-SCA-Request": "1",
+                "Host": "configured-canary.invalid", "X-Forwarded-Host": "proxy-canary.devin.ai",
+            })
+        self.assertEqual(response.status_code, 403)
+        message = captured.records[0].getMessage()
+        self.assertIn("origin_host_kind=other host_header_kind=configured x_forwarded_host_kind=devin_ai", message)
+        self.assertNotIn("canary", message)
+
+    def test_loopback_origin_configuration_is_explicit_and_demo_only(self):
+        self.assertFalse(Settings.from_env({"SCA_MODE": "demo"}).allow_loopback_origins)
+        self.assertFalse(Settings.from_env({"SCA_ALLOW_LOOPBACK_ORIGINS": "0"}).allow_loopback_origins)
+        self.assertTrue(Settings.from_env({
+            "SCA_MODE": "demo", "SCA_ALLOW_LOOPBACK_ORIGINS": "1",
+        }).allow_loopback_origins)
+        for values in (
+            {"SCA_ALLOW_LOOPBACK_ORIGINS": "1"},
+            {"SCA_MODE": "live", "SCA_ALLOW_LOOPBACK_ORIGINS": "1"},
+        ):
+            with self.assertRaisesRegex(ValueError, "requires SCA_MODE=demo"):
+                Settings.from_env(values)
+        with self.assertRaisesRegex(ValueError, "requires SCA_MODE=demo"):
+            replace(self.settings, allow_loopback_origins=True)
+        with self.assertRaisesRegex(ValueError, "must be '0' or '1'"):
+            Settings.from_env({"SCA_MODE": "demo", "SCA_ALLOW_LOOPBACK_ORIGINS": "true"})
+
+    def test_demo_opt_in_accepts_exact_loopback_origins_and_http_session_cookie(self):
+        self.settings = replace(
+            self.settings, mode="demo", allow_loopback_origins=True,
+            public_origin="https://configured-canary.invalid",
+        )
+        _, client = self.client(demo=True)
+        client.base_url = "http://localhost:51234"
+        origins = (
+            "http://localhost", "http://localhost:51234", "https://localhost:65535",
+            "http://127.0.0.1:1234", "https://127.0.0.1",
+            "http://[::1]:4321", "https://[::1]",
+            self.settings.public_origin,
+        )
+        with self.assertNoLogs("sca_reachability.server.security", level="WARNING"):
+            for origin in origins:
+                with self.subTest(origin=origin):
+                    headers = {"Origin": origin, "X-SCA-Request": "1"}
+                    response = client.post("/api/session", json={"token": "local-demo"}, headers=headers)
+                    self.assertEqual(response.status_code, 200)
+                    cookie = response.headers["set-cookie"]
+                    self.assertIn("HttpOnly", cookie)
+                    self.assertIn("SameSite=strict", cookie)
+                    self.assertIn("Path=/api", cookie)
+                    self.assertIn("Max-Age=28800", cookie)
+                    self.assertNotIn("domain=", cookie.lower())
+                    self.assertNotIn("secure", cookie.lower())
+                    self.assertNotIn("X-SCA-Diagnostic-ID", response.headers)
+                    self.assertEqual(client.delete("/api/session", headers=headers).status_code, 204)
+                    self.assertEqual(client.get("/api/installations").status_code, 401)
+
+    def test_demo_without_opt_in_rejects_loopback_login_and_mutations(self):
+        self.settings = replace(self.settings, public_origin="https://configured-canary.invalid")
+        _, client = self.client(demo=True)
+        response = client.post("/api/session", json={"token": "local-demo"}, headers={
+            "Origin": self.settings.public_origin, "X-SCA-Request": "1",
+        })
+        self.assertEqual(response.status_code, 200)
+        for origin in ("http://localhost:51234", "https://127.0.0.1", "http://[::1]:1234"):
+            headers = {"Origin": origin, "X-SCA-Request": "1"}
+            self.assertEqual(client.post("/api/session", json={"token": "local-demo"}, headers=headers).status_code, 403)
+            self.assertEqual(client.delete("/api/session", headers=headers).status_code, 403)
+
+    def test_demo_loopback_opt_in_does_not_relax_other_request_validation(self):
+        self.settings = replace(
+            self.settings, mode="demo", allow_loopback_origins=True,
+            public_origin="https://configured-canary.invalid",
+        )
+        origins = (
+            "https://evil.example", "http://localhost.evil.com",
+            "http://127.0.0.1.evil.com", "http://127.0.0.2", "http://localhost.",
+            "http://127.1", "ftp://localhost", "http://localhost:bad-port",
+            "http://localhost:65536", "http://@localhost", "http://localhost/path",
+        )
+        cases = [{"Origin": origin, "X-SCA-Request": "1"} for origin in origins]
+        cases.extend((
+            {"Origin": "http://localhost:51234"},
+            {"Origin": "http://localhost:51234", "X-SCA-Request": "bad-marker"},
+            {"X-SCA-Request": "1"},
+            {"Origin": "https://evil.example", "X-SCA-Request": "1",
+             "X-Forwarded-Host": "localhost:51234", "X-Forwarded-Proto": "http"},
+        ))
+        for headers in cases:
+            with self.subTest(headers=headers):
+                _, client = self.client(demo=True)
+                valid = {"Origin": self.settings.public_origin, "X-SCA-Request": "1"}
+                self.assertEqual(client.post("/api/session", json={"token": "local-demo"}, headers=valid).status_code, 200)
+                self.assertEqual(client.post("/api/session", json={"token": "local-demo"}, headers=headers).status_code, 403)
+                self.assertEqual(client.delete("/api/session", headers=headers).status_code, 403)
+                self.assertEqual(client.delete("/api/session", headers=valid).status_code, 204)
+
+    def test_live_login_has_no_demo_diagnostic_logs_or_headers(self):
+        _, client = self.client(github=False)
+        cases = (
+            ({"Origin": "http://testserver"}, "token-canary", 403),
+            (
+                {"Origin": "https://foreign.invalid", "X-SCA-Request": "1"},
+                "token-canary",
+                403,
+            ),
+            (CSRF, "token-canary", 401),
+        )
+        with self.assertNoLogs("sca_reachability.server.security", level="WARNING"):
+            for headers, token, status in cases:
+                response = client.post(
+                    "/api/session", json={"token": token}, headers=headers
+                )
+                self.assertEqual(response.status_code, status)
+                self.assertNotIn("X-SCA-Diagnostic-ID", response.headers)
+            valid = client.post(
+                "/api/session", json={"token": TOKEN}, headers=CSRF
+            )
+        self.assertEqual(valid.status_code, 200)
+        self.assertEqual(valid.json(), {"authenticated": True})
+        self.assertNotIn("X-SCA-Diagnostic-ID", valid.headers)
 
     def test_live_unconfigured_starts_and_fails_closed(self):
         _, client = self.client(github=False)

@@ -378,7 +378,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--soft) 50%, transparent); }
 footer { margin: 0 36px; padding: 18px 0 24px; font-size: 9px; }
 
 /* Entry: the action stays above supporting context on small screens. */
-.guest .sidebar { display: none; }.guest { grid-template-columns: 1fr; }
+.guest .sidebar { display: none; }.app-shell.guest { grid-template-columns: minmax(0, 1fr); }
 .guest .workspace { max-width: 1440px; margin: auto; width: 100%; }
 .guest .topbar { background: transparent; }
 .guest main { padding: 36px; }
