@@ -44,7 +44,7 @@ function harness(responder) {
     },
   };
   vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped, overview, activity, branches, scanTable, branchRows, simulationControls, renderLogin, openDetail, focusMain, matchingScans, resultsList, refresh, selectFiltered, findingMarkup, advisoryLink, manifestLink, findingInstructions, copyInstructions, selectionSummary, renderView };`, sandbox);
-  return { ...sandbox.testApp, nodes, calls, events, windowEvents, timers, clipboard, document: sandbox.document,
+  return { ...sandbox.testApp, nodes, calls, events, windowEvents, timers, clipboard, document: sandbox.document, window: sandbox.window,
     async tick(delay) {
       const entry = [...timers].find(([, timer]) => timer.delay === delay);
       assert.ok(entry, `No timer with delay ${delay}`);
@@ -76,6 +76,32 @@ test("results search finds advisory IDs and package names, including clean inven
   assert.equal(app.matchingScans().length, 0);
   app.state.meta = { mode: "demo" };
   assert.match(app.scanTable(app.state.scans), /DEMO-0001/);
+});
+
+test("overview next step uses the scoped latest completed scan, not accumulated finding totals", () => {
+  const app = harness(() => ({}));
+  Object.assign(app.state, { meta: { mode: "demo" }, dashboard: { findings: 99 },
+    branches: [{ name: "main", selected: true }], installation: 1, repository: 2,
+    scans: [{ id: "pending", status: "running", finding_count: 99 }, { id: "latest", status: "completed", branch: "main", finding_count: 1 }] });
+  assert.match(app.overview(), /1 achado para revisar/);
+  assert.match(app.overview(), /data-id="latest"/);
+  assert.doesNotMatch(app.overview(), /99 achados para revisar/);
+  app.state.branches = [];
+  assert.match(app.overview(), /Escolha suas primeiras branches/);
+  assert.match(app.overview(), /class="attention-card"[\s\S]*Configurar branches →<\/a><\/section>/);
+});
+
+test("report section navigation keeps evidence, explanation, and inventory separately addressable", async () => {
+  const app = harness(() => ({ body: { status: "completed", source: "demo", findings: [], components: [], warnings: [] } }));
+  app.state.authenticated = true;
+  await app.openDetail("scan");
+  const html = app.nodes.get("#detail-content").innerHTML;
+  for (const section of ["report-findings", "report-explanation", "report-components", "report-limits"]) {
+    assert.ok(html.includes(`data-section="${section}"`));
+    assert.ok(html.includes(`id="${section}"`));
+  }
+  assert.match(html, /Não avaliado/);
+  assert.match(html, /não significa que o projeto está livre de vulnerabilidades/);
 });
 
 const evidenceFinding = { advisory_id: "DEMO-0001", package_name: "fictional-demo-package", version: "1.0.0",
@@ -361,6 +387,54 @@ test("closing a report cancels polling and restores focus without scrolling navi
   app.nodes.get("#detail-dialog").close();
   assert.equal(app.timers.size, 0);
   assert.equal(app.nodes.get("#main").focusOptions.preventScroll, true);
+});
+
+test("report close restores the source button and both scroll positions after a background rerender", async () => {
+  const app = harness(() => ({ body: { status: "queued" } }));
+  app.state.authenticated = true;
+  app.state.view = "branches";
+  app.document.activeElement = { id: "scan-trigger", dataset: { action: "scan", branch: "main" } };
+  app.nodes.set("#main", { contains() { return true; }, focus() {} });
+  app.nodes.set("#branch-list", { scrollTop: 180 });
+  Object.assign(app.window, { scrollX: 7, scrollY: 772 });
+  let scrolled;
+  app.window.scrollTo = options => { scrolled = options; };
+  await app.openDetail("scan");
+  const replacement = { focus(options) { this.focusOptions = options; } };
+  app.nodes.set("#scan-trigger", replacement);
+  app.nodes.get("#branch-list").scrollTop = 0;
+  app.nodes.get("#detail-dialog").close();
+  assert.equal(replacement.focusOptions.preventScroll, true);
+  assert.equal(scrolled.top, 772);
+  assert.equal(scrolled.left, 7);
+  assert.equal(app.nodes.get("#branch-list").scrollTop, 180);
+  assert.equal(app.state.detailReturn, null);
+  assert.equal(app.timers.size, 0);
+});
+
+test("manual scan remembers its trigger before the busy render removes focus", async () => {
+  let app;
+  app = harness((path, options) => {
+    if (path.endsWith("/scan") && options.method === "POST") {
+      app.document.activeElement = null;
+      return { body: { scan_id: "new-scan" } };
+    }
+    return { body: path.startsWith("/api/scans?") ? { items: [] } : { status: "completed" } };
+  });
+  Object.assign(app.state, { authenticated: true, meta: { mode: "demo" }, view: "branches", installation: 1, repository: 2,
+    branches: [{ name: "main", selected: true }], selected: new Set(["main"]) });
+  const trigger = { id: "manual-trigger", dataset: { action: "scan", branch: "main" }, focus(options) { this.focusOptions = options; } };
+  app.document.activeElement = trigger;
+  app.nodes.set("#main", { contains() { return true; }, setAttribute() {} });
+  app.nodes.set("#manual-trigger", trigger);
+  app.window.scrollY = 772;
+  let scrolled;
+  app.window.scrollTo = options => { scrolled = options; };
+  await app.events.get("click")({ target: { closest() { return trigger; } } });
+  assert.equal(app.nodes.get("#detail-dialog").open, true);
+  app.nodes.get("#detail-dialog").close();
+  assert.equal(trigger.focusOptions.preventScroll, true);
+  assert.equal(scrolled.top, 772);
 });
 
 test("failed or unavailable reports never poll or present empty calculated results", async () => {

@@ -1,3 +1,20 @@
+# Experiência de triagem e monitoramento
+
+O workspace usa navegação lateral no desktop e quatro destinos fixos no rodapé do celular. O acesso à demonstração aparece antes da explicação do produto no celular, com uma ação direta que usa a sessão real da API. `local-demo` nunca é oferecido em modo live.
+
+## Caminho para revisão
+
+1. Entre na demonstração, explicitamente sintética, ou use o token do operador em live.
+2. Na Visão geral, confira os totais do ambiente; a caixa de próximo passo e as execuções recentes se referem somente ao repositório selecionado. Achados atuais somam a última análise concluída de cada branch e podem incluir o mesmo aviso em branches diferentes; análises registradas incluem o histórico.
+3. Em Monitoramento, escolha a instalação e o repositório, marque branches e salve. A barra de ações, acima da lista, informa alterações não salvas sem sobrepor linhas. A lista tem rolagem própria. Desmarcar todas pausa novos eventos sem apagar o histórico.
+4. Use Analisar em uma branch salva ou, somente em demo, escolha a branch no painel de simulação e simule um push. Nenhum push real é enviado.
+5. No relatório, use os atalhos para Achados, Resumo local/Leitura por IA, Componentes e Limites e origem. Evidências ficam abertas por padrão e instruções podem ser copiadas.
+6. Em Atividade, abra a execução vinculada ao evento, sem confundir resultado do webhook com conclusão da análise.
+
+O relatório é um drawer lateral no desktop e uma tela completa no celular, com Fechar fixo no cabeçalho. Dados sintéticos, conteúdo de IA e evidência técnica continuam distintos. Alcance não avaliado é desconhecido, nunca seguro ou inalcançável. As integrações reais exigem configuração e validação próprias; configuração presente não comprova saúde da conexão.
+
+---
+
 # Painel do SCA Reachability
 
 Interface em português, sem dependências de runtime ou etapa de build. Os arquivos
