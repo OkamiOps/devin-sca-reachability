@@ -398,6 +398,21 @@ function findingMarkup(finding, scan) {
     <details><summary>Ver evidências e limites</summary><div class="evidence"><h4>Por que este achado apareceu?</h4><p><span class="mono">${e(finding.package_name)}@${e(finding.version)}</span> encontrado em ${manifests} no commit <span class="mono">${e(scan.commit_sha?.slice(0, 7) || "não informado")}</span>. ${scan.source === "demo" ? "Correlação sintética por versão exata com o aviso fictício; não houve consulta ao OSV." : "Correspondência com o aviso por versão exata via OSV."}</p><p>Não foi feita análise de fluxo/chamadas; por isso o alcance é desconhecido.</p><dl><dt>Identificador</dt><dd class="mono">${advisoryLink(finding.advisory_id || finding.id)}</dd><dt>Componente</dt><dd class="mono">${e(finding.purl || finding.package_name)}</dd><dt>Ecossistema</dt><dd>${e(finding.ecosystem || "Não informado")}</dd><dt>Correção informada</dt><dd>${e(finding.fixed_versions?.length ? finding.fixed_versions.join(", ") : "Nenhuma versão informada nos dados")}</dd><dt>Alcance</dt><dd>${e(reachabilityLabel(finding.reachability))}. A presença da dependência não prova que o caminho vulnerável é executado.</dd></dl></div></details>
     <section class="next-step"><h4>Próximo passo</h4><p>${e(instructions)}</p>${button("Copiar instruções", "copy-instructions", "quiet", false, `data-instructions="${e(instructions)}"`)}</section></article>`;
 }
+function demoSourceMarkup(scan) {
+  if (!demo() || scan.source !== "demo" || scan.status !== "completed") return "";
+  const sources = Array.isArray(scan.demo_sources)
+    ? scan.demo_sources.filter(source => source && typeof source.manifest_path === "string" &&
+      typeof source.blob_sha === "string" && typeof source.content === "string")
+    : [];
+  if (!sources.length) {
+    return '<section class="demo-source spaced"><h3>Registro sintético de origem</h3><p>Registro-fonte não armazenado nesta execução; simule uma nova análise.</p></section>';
+  }
+  return '<details class="demo-source spaced"><summary>Consultar registro sintético de origem</summary><p>Conteúdo gerado localmente para a demonstração; não é um arquivo obtido do GitHub.</p>' +
+    sources.map(source => '<section class="demo-source-item"><p><strong>Manifesto sintético (caminho virtual):</strong> <code>' +
+      e(source.manifest_path) + '</code></p><p class="secondary small">Hash do blob: <code>' + e(source.blob_sha) +
+      '</code></p><pre class="demo-source-json"><code>' + e(source.content) + '</code></pre></section>').join("") +
+    '</details>';
+}
 async function openDetail(id, polling = false) {
   clearTimeout(state.detailTimer);
   const epoch = ++state.detailEpoch;
@@ -415,7 +430,7 @@ async function openDetail(id, polling = false) {
     $("#detail-content").innerHTML = `<div class="dialog-heading"><div><span class="eyebrow">RELATÓRIO DA EXECUÇÃO</span><h2 id="detail-title">${scan.status === "completed" ? findings.length ? `${count(findings.length)} ${findings.length === 1 ? "achado" : "achados"}.` : "Sem achados nos dados." : e(scanLabel(scan.status))}</h2></div>${button("Fechar", "close-detail", "quiet")}</div>
       <div class="inline">${badge(scanLabel(scan.status), scan.status)}${badge(scan.source === "demo" ? "Demonstração · dados fictícios" : scan.source === "github" ? "Origem: GitHub" : "Origem não informada", scan.source === "demo" ? "demo" : "muted")}</div>
     <div class="dialog-meta"><span class="break">${e(scan.repository)} <span aria-hidden="true">/</span> ${e(scan.branch)}</span><span class="mono id-chip" title="${e(scan.commit_sha || "não informado")}">Commit ${e(scan.commit_sha || "não informado")}</span><span>${e(formatDate(scan.completed_at || scan.created_at))}</span></div>
-      ${scan.source === "demo" ? '<p class="note">Este relatório é sintético. Não representa o estado de segurança de um projeto real.</p>' : ""}
+      ${scan.source === "demo" ? '<p class="note">Este relatório é sintético. Não representa o estado de segurança de um projeto real.</p>' : ""}${demoSourceMarkup(scan)}
       ${scan.status === "failed" ? `<p class="note form-error">A análise falhou e não produziu resultados. Nenhuma conclusão de segurança pode ser extraída.</p><p>Você pode tentar novamente com a mesma branch e o mesmo commit, se a branch continuar monitorada.</p>${button("Tentar novamente", "retry-scan", "quiet", false, `data-id="${e(id)}"`)}<p id="detail-action-error" class="form-error" role="alert"></p>` : ""}
       ${pending ? `<p class="note">Resultados ainda não calculados. Acompanhando automaticamente. ${button("Atualizar agora", "detail", "text-button", false, `data-id="${e(id)}"`)}</p>` : ""}
       ${warnings.length ? `<div class="note"><strong>Limitações informadas pelo serviço</strong><ul>${warnings.map(warning => `<li class="break">${e(warning)}</li>`).join("")}</ul></div>` : ""}

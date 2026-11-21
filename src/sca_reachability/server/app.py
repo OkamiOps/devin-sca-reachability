@@ -415,6 +415,23 @@ def create_app(
                 "SELECT warning FROM scan_warnings WHERE scan_id = ? ORDER BY ordinal", (scan_id,),
             ).fetchall()]
             result["explanation"] = json.loads(row["explanation_json"])
+            if settings.mode == "demo" and row["source"] == "demo":
+                sources = []
+                for source in connection.execute(
+                    """SELECT manifest_path, blob_sha, content FROM scan_demo_sources
+                    WHERE scan_id = ? ORDER BY ordinal""", (scan_id,),
+                ).fetchall():
+                    try:
+                        content = bytes(source["content"]).decode("utf-8")
+                    except (TypeError, UnicodeDecodeError):
+                        continue
+                    sources.append({
+                        "manifest_path": source["manifest_path"],
+                        "blob_sha": source["blob_sha"],
+                        "content": content,
+                    })
+                if sources:
+                    result["demo_sources"] = sources
         return result
 
     @app.get("/api/deliveries", dependencies=[Depends(operator)])
@@ -457,7 +474,10 @@ def create_app(
                 raise ServiceError(400, "The branch is not selected for monitoring.")
             if scan["status"] != "failed":
                 raise HTTPException(409, "Only failed scans can be retried")
-            for table in ("scan_components", "scan_findings", "scan_warnings", "jobs"):
+            for table in (
+                "scan_components", "scan_findings", "scan_warnings",
+                "scan_demo_sources", "jobs",
+            ):
                 connection.execute(f"DELETE FROM {table} WHERE scan_id = ?", (scan_id,))
             connection.execute(
                 """UPDATE scans SET status = 'queued', completed_at = NULL, error = NULL,

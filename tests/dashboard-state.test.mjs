@@ -141,6 +141,34 @@ test("report retains header and footer close actions with sticky compact styling
   assert.match(css, /#detail-title \{ font-size: 22px/);
 });
 
+test("demo report displays only stored escaped synthetic source; legacy and live reports stay honest", async () => {
+  const content = '{"packages":{"node_modules/fictional-demo-package":{"version":"1.0.0"}},"display":"</code><script>alert(1)</script>"}';
+  const storedSource = { manifest_path: "package-lock.json", blob_sha: "a".repeat(40), content };
+  const report = { ...evidenceScan, status: "completed", source: "demo", demo_sources: [storedSource] };
+  const app = harness(() => ({ body: report }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "demo" } });
+  await app.openDetail("scan");
+  const html = app.nodes.get("#detail-content").innerHTML;
+  assert.match(html, /Consultar registro sintético de origem/);
+  assert.match(html, /Conteúdo gerado localmente para a demonstração; não é um arquivo obtido do GitHub/);
+  assert.match(html, /Manifesto sintético \(caminho virtual\).*package-lock\.json/);
+  assert.match(html, /Hash do blob/);
+  assert.ok(html.includes('&lt;/code&gt;&lt;script&gt;alert(1)&lt;/script&gt;'));
+  assert.doesNotMatch(html, /<script>|href="[^"]*github\.com|linha \d+/i);
+
+  const legacy = harness(() => ({ body: { ...report, demo_sources: undefined } }));
+  Object.assign(legacy.state, { authenticated: true, meta: { mode: "demo" } });
+  await legacy.openDetail("legacy");
+  assert.match(legacy.nodes.get("#detail-content").innerHTML,
+    /Registro-fonte não armazenado nesta execução; simule uma nova análise/);
+
+  const live = harness(() => ({ body: report }));
+  Object.assign(live.state, { authenticated: true, meta: { mode: "live" } });
+  await live.openDetail("live");
+  assert.doesNotMatch(live.nodes.get("#detail-content").innerHTML,
+    /Consultar registro sintético de origem|Manifesto sintético \(caminho virtual\)|Conteúdo gerado localmente para a demonstração/);
+});
+
 test("switching away and back keeps a numeric demo repository ID and saved target", async () => {
   const app = harness(path => {
     if (path === "/api/installations") return { body: { items: [{ id: 9001, status: "active" }] } };

@@ -178,6 +178,7 @@ def _parse_requirements(
 def inventory_manifests(
     tree: Iterable[dict],
     read_blob: Callable[[str], bytes],
+    on_manifest: Callable[[str, str, bytes], None] | None = None,
 ) -> InventoryResult:
     warnings: list[str] = []
     candidates = []
@@ -250,6 +251,8 @@ def inventory_manifests(
                 f"{path}: exceeds the 2 MiB manifest limit and was not inspected."
             )
             continue
+        if on_manifest:
+            on_manifest(path, sha.lower(), content)
         if path.endswith("package-lock.json"):
             parsed, parse_warnings = _parse_package_lock(content, path)
         else:

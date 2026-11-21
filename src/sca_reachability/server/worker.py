@@ -6,7 +6,7 @@ from sca_reachability.explanation import explain_report
 from sca_reachability.server.config import Settings
 from sca_reachability.server.db import Database, iso_now
 from sca_reachability.server.errors import RetryableError, ScanError
-from sca_reachability.server.github import GitHubAdapter
+from sca_reachability.server.github import DemoGitHubAdapter, GitHubAdapter
 from sca_reachability.server.manifests import inventory_manifests
 from sca_reachability.server.osv_client import Advisory, OsvAdapter
 from sca_reachability.server.service import authorized_scope
@@ -99,7 +99,7 @@ class ScanWorker:
         with self.database.transaction() as connection:
             job = connection.execute(
                 """
-                SELECT j.*, s.repository FROM jobs j JOIN scans s ON s.id = j.scan_id
+                SELECT j.*, s.repository, s.source FROM jobs j JOIN scans s ON s.id = j.scan_id
                 WHERE j.status IN ('queued', 'retry') AND j.available_at <= ?
                 ORDER BY j.id LIMIT 1
                 """,
@@ -117,6 +117,9 @@ class ScanWorker:
             connection.execute(
                 "UPDATE scans SET status = 'running', error = NULL WHERE id = ?",
                 (job["scan_id"],),
+            )
+            connection.execute(
+                "DELETE FROM scan_demo_sources WHERE scan_id = ?", (job["scan_id"],)
             )
             job_data = dict(job)
             job_data["attempts"] += 1
@@ -136,8 +139,8 @@ class ScanWorker:
         )
         heartbeat.start()
         try:
-            inventory, advisories_by_component = self._analyze(job_data)
-            self._save_results(job_data, inventory, advisories_by_component)
+            inventory, advisories_by_component, demo_sources = self._analyze(job_data)
+            self._save_results(job_data, inventory, advisories_by_component, demo_sources)
         except RetryableError:
             self._retry_or_fail(job_data)
         except ScanError as error:
@@ -197,9 +200,21 @@ class ScanWorker:
         if truncated:
             raise ScanError("GitHub returned a truncated dependency tree; the scan is incomplete.")
         self._ensure_authorized(job)
+        demo_sources = []
+        capture_demo_sources = (
+            self.settings.mode == "demo"
+            and job.get("source") == "demo"
+            and type(self.github) is DemoGitHubAdapter
+        )
         inventory = inventory_manifests(
             tree,
             lambda blob_sha: self._read_blob(job, blob_sha),
+            on_manifest=(
+                lambda path, blob_sha, content: demo_sources.append(
+                    {"manifest_path": path, "blob_sha": blob_sha, "content": bytes(content)}
+                )
+                if capture_demo_sources else None
+            ),
         )
         self._ensure_authorized(job)
         if inventory.components:
@@ -215,7 +230,7 @@ class ScanWorker:
         ):
             raise ScanError("OSV returned malformed advisory data.")
         self._ensure_authorized(job)
-        return inventory, advisories
+        return inventory, advisories, demo_sources
 
     def _read_blob(self, job: dict, blob_sha: str) -> bytes:
         self._ensure_authorized(job)
@@ -244,7 +259,7 @@ class ScanWorker:
                 )
         return {"findings": findings}
 
-    def _save_results(self, job: dict, inventory, advisories_by_component) -> None:
+    def _save_results(self, job: dict, inventory, advisories_by_component, demo_sources=()) -> None:
         self._ensure_authorized(job)
         report = self._explanation_report(inventory, advisories_by_component)
         explanation = explain_report(report, provider=self.ai_provider)
@@ -269,6 +284,9 @@ class ScanWorker:
                 )
             ):
                 return
+            connection.execute(
+                "DELETE FROM scan_demo_sources WHERE scan_id = ?", (job["scan_id"],)
+            )
             for ordinal, component in enumerate(inventory.components):
                 connection.execute(
                     """
@@ -329,6 +347,21 @@ class ScanWorker:
                     "INSERT INTO scan_warnings(scan_id, ordinal, warning) VALUES (?, ?, ?)",
                     (job["scan_id"], ordinal, warning[:2000]),
                 )
+            if (
+                self.settings.mode == "demo"
+                and job.get("source") == "demo"
+                and type(self.github) is DemoGitHubAdapter
+            ):
+                for ordinal, source in enumerate(demo_sources):
+                    connection.execute(
+                        """INSERT INTO scan_demo_sources(
+                            scan_id, ordinal, manifest_path, blob_sha, content
+                        ) VALUES (?, ?, ?, ?, ?)""",
+                        (
+                            job["scan_id"], ordinal, source["manifest_path"],
+                            source["blob_sha"], source["content"],
+                        ),
+                    )
             connection.execute(
                 """
                 UPDATE scans SET status = 'completed', completed_at = ?,
@@ -368,6 +401,9 @@ class ScanWorker:
             WHERE id = ? AND status IN ('queued', 'running')
             """,
             (now, job["scan_id"]),
+        )
+        connection.execute(
+            "DELETE FROM scan_demo_sources WHERE scan_id = ?", (job["scan_id"],)
         )
 
     def _retry_or_fail(self, job: dict) -> None:
@@ -417,6 +453,9 @@ class ScanWorker:
         )
         if not updated.rowcount:
             return
+        connection.execute(
+            "DELETE FROM scan_demo_sources WHERE scan_id = ?", (scan_id,)
+        )
         connection.execute(
             """
             UPDATE scans SET status = 'failed', completed_at = ?, error = ?

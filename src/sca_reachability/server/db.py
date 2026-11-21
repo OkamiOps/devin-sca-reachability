@@ -86,6 +86,15 @@ CREATE TABLE IF NOT EXISTS scan_warnings (
     PRIMARY KEY (scan_id, ordinal),
     FOREIGN KEY (scan_id) REFERENCES scans(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS scan_demo_sources (
+    scan_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    manifest_path TEXT NOT NULL,
+    blob_sha TEXT NOT NULL,
+    content BLOB NOT NULL,
+    PRIMARY KEY (scan_id, ordinal),
+    FOREIGN KEY (scan_id) REFERENCES scans(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS deliveries (
     delivery_id TEXT PRIMARY KEY,
     payload_sha256 TEXT NOT NULL,

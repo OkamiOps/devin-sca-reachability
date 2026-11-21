@@ -19,7 +19,7 @@ try:
     from sca_reachability.server.app import create_app
     from sca_reachability.server.config import Settings
     from sca_reachability.server.errors import RetryableError, ScanError
-    from sca_reachability.server.github import GitHubAppClient
+    from sca_reachability.server.github import DemoGitHubAdapter, GitHubAppClient
     from sca_reachability.server.manifests import (
         LockedComponent, inventory_manifests, _parse_package_lock, _parse_requirements,
     )
@@ -167,6 +167,138 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(client.post("/api/demo/push", json={"repository_id": 9002, "branch": ""},
                                      headers=CSRF).status_code, 400)
 
+    def test_demo_sources_capture_exact_main_and_release_blobs_and_survive_restart(self):
+        settings = replace(self.settings, mode="demo")
+        adapter = DemoGitHubAdapter()
+        consumed = {}
+        get_blob = adapter.get_blob
+
+        def capture_consumed_blob(installation_id, repository_id, repository, blob_sha):
+            content = get_blob(installation_id, repository_id, repository, blob_sha)
+            consumed[blob_sha] = content
+            return content
+
+        adapter.get_blob = capture_consumed_blob
+        app = create_app(settings, github_adapter=adapter, worker_enabled=False)
+        with TestClient(app) as client:
+            self.assertEqual(client.post(
+                "/api/session", json={"token": "local-demo"}, headers=CSRF
+            ).status_code, 200)
+            main = client.get("/api/scans").json()["items"][0]
+            main_detail = client.get("/api/scans/" + main["id"]).json()
+            self.assertEqual(main_detail["status"], "completed")
+            main_source = main_detail["demo_sources"][0]
+            self.assertEqual(main_source["manifest_path"], "package-lock.json")
+            self.assertEqual(main_source["content"].encode(), consumed[main_source["blob_sha"]])
+            self.assertEqual(json.loads(main_source["content"])["packages"][
+                "node_modules/fictional-demo-package"
+            ]["version"], "1.0.0")
+
+            branch_path = "/api/installations/9001/repositories/9002/branches"
+            self.assertEqual(client.put(
+                branch_path, json={"branches": ["main", "release"]}, headers=CSRF
+            ).status_code, 200)
+            pushed = client.post(
+                "/api/demo/push", json={"repository_id": 9002, "branch": "release"}, headers=CSRF
+            )
+            self.assertEqual(pushed.status_code, 202, pushed.text)
+            self.assertTrue(app.state.worker.run_once())
+            release_id = pushed.json()["scan_id"]
+            release_detail = client.get("/api/scans/" + release_id).json()
+            release_source = release_detail["demo_sources"][0]
+            self.assertEqual(release_source["content"].encode(), consumed[release_source["blob_sha"]])
+            self.assertEqual(json.loads(release_source["content"])["packages"][
+                "node_modules/fictional-demo-package"
+            ]["version"], "1.1.0")
+            main_id = main["id"]
+
+        restarted_adapter = DemoGitHubAdapter()
+        restarted_app = create_app(settings, github_adapter=restarted_adapter, worker_enabled=False)
+        with TestClient(restarted_app) as client:
+            self.assertEqual(client.post(
+                "/api/session", json={"token": "local-demo"}, headers=CSRF
+            ).status_code, 200)
+            persisted = client.get("/api/scans/" + main_id).json()
+            self.assertEqual(persisted["demo_sources"][0]["content"].encode(),
+                             consumed[persisted["demo_sources"][0]["blob_sha"]])
+            with restarted_app.state.database.transaction() as connection:
+                connection.execute("DELETE FROM scan_demo_sources WHERE scan_id = ?", (main_id,))
+            legacy = client.get("/api/scans/" + main_id).json()
+            self.assertNotIn("demo_sources", legacy)
+
+    def test_demo_source_capture_requires_trusted_adapter_and_failed_scans_store_none(self):
+        demo_settings = replace(self.settings, mode="demo")
+        injected_app = create_app(
+            demo_settings, github_adapter=self.github, osv_adapter=DemoOsvAdapter(),
+            worker_enabled=False,
+        )
+        with TestClient(injected_app) as client:
+            self.assertEqual(client.post(
+                "/api/session", json={"token": "local-demo"}, headers=CSRF
+            ).status_code, 200)
+            scan = client.get("/api/scans").json()["items"][0]
+            self.assertEqual(scan["status"], "completed")
+            self.assertNotIn("demo_sources", client.get("/api/scans/" + scan["id"]).json())
+            with injected_app.state.database.connection() as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT COUNT(*) FROM scan_demo_sources"
+                ).fetchone()[0], 0)
+
+        class FailingOsv(DemoOsvAdapter):
+            def query(self, components):
+                raise ScanError("fixture failure after manifest read")
+
+        failed_settings = replace(
+            demo_settings, database_path=Path(self.directory.name) / "failed-demo.sqlite3"
+        )
+        failed_adapter = DemoGitHubAdapter()
+        consumed = []
+        get_blob = failed_adapter.get_blob
+        def record_read(*args):
+            content = get_blob(*args)
+            consumed.append(content)
+            return content
+        failed_adapter.get_blob = record_read
+        failed_app = create_app(
+            failed_settings, github_adapter=failed_adapter, osv_adapter=FailingOsv(),
+            worker_enabled=False,
+        )
+        with TestClient(failed_app) as client:
+            self.assertEqual(client.post(
+                "/api/session", json={"token": "local-demo"}, headers=CSRF
+            ).status_code, 200)
+            failed = client.get("/api/scans").json()["items"][0]
+            self.assertEqual(failed["status"], "failed")
+            self.assertTrue(consumed)
+            self.assertNotIn("demo_sources", client.get("/api/scans/" + failed["id"]).json())
+            with failed_app.state.database.connection() as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT COUNT(*) FROM scan_demo_sources"
+                ).fetchone()[0], 0)
+
+    def test_live_api_never_exposes_demo_sources_including_historic_demo_rows(self):
+        app, client = self.client()
+        self.select(client)
+        scan_id = self.push(client).json()["scan_id"]
+        app.state.worker.run_once()
+        detail = client.get("/api/scans/" + scan_id, headers=AUTH).json()
+        self.assertEqual(detail["source"], "github")
+        self.assertNotIn("demo_sources", detail)
+        with app.state.database.transaction() as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM scan_demo_sources"
+            ).fetchone()[0], 0)
+            connection.execute("UPDATE scans SET source = 'demo' WHERE id = ?", (scan_id,))
+            connection.execute(
+                """INSERT INTO scan_demo_sources(
+                    scan_id, ordinal, manifest_path, blob_sha, content
+                ) VALUES (?, 0, 'package-lock.json', ?, ?)""",
+                (scan_id, "0" * 40, b'{"synthetic":true}'),
+            )
+        self.assertNotIn("demo_sources", client.get(
+            "/api/scans/" + scan_id, headers=AUTH
+        ).json())
+
     def test_deliveries_expose_current_linked_scan_status_without_changing_event_outcome(self):
         app, client = self.client()
         self.assertTrue(client.get("/api/meta").json()["github_configured"])
@@ -208,6 +340,13 @@ class ServerTests(unittest.TestCase):
         self.github.truncated = True
         scan_id = self.push(client).json()["scan_id"]
         app.state.worker.run_once()
+        with app.state.database.transaction() as connection:
+            connection.execute(
+                """INSERT INTO scan_demo_sources(
+                    scan_id, ordinal, manifest_path, blob_sha, content
+                ) VALUES (?, 0, 'package-lock.json', ?, ?)""",
+                (scan_id, "0" * 40, b'{"stale":true}'),
+            )
         with app.state.database.connection() as connection:
             old_job = dict(connection.execute("SELECT * FROM jobs WHERE scan_id = ?", (scan_id,)).fetchone())
         path = "/api/scans/" + scan_id + "/retry"
@@ -216,6 +355,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(result.status_code, 202, result.text)
         self.assertEqual(result.json()["scan_id"], scan_id)
         with app.state.database.connection() as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM scan_demo_sources WHERE scan_id = ?", (scan_id,)
+            ).fetchone()[0], 0)
             job = connection.execute("SELECT * FROM jobs WHERE scan_id = ?", (scan_id,)).fetchone()
             self.assertGreater(job["id"], old_job["id"])
             self.assertEqual((job["commit_sha"], job["attempts"]), ("c" * 40, 0))
