@@ -167,6 +167,22 @@ class PublicByURLTests(unittest.TestCase):
             branches = client.get(f"/api/installations/9003/repositories/{healthy['id']}/branches", headers=headers).json()['items']
             self.assertEqual({b['name'] for b in branches}, {'main', 'release'})
 
+    def test_public_scan_cannot_select_a_twenty_first_monitored_branch(self):
+        headers = {'Authorization': 'Bearer '+'t'*32}
+        with tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
+            repo = client.post('/api/public/repositories', json={'url': 'a/b'}, headers=headers).json()['repository']
+            with client.app.state.database.transaction() as connection:
+                for index in range(20):
+                    connection.execute("INSERT INTO branches VALUES (9003, ?, ?, ?, 'now')", (repo['id'], f'branch{index}', int(index < 19)))
+            endpoint = f"/api/public/repositories/{repo['id']}/scan"
+            response = client.post(endpoint, json={'branch': 'branch19'}, headers=headers)
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()['code'], 'branch_limit')
+            with client.app.state.database.connection() as connection:
+                self.assertEqual(connection.execute('SELECT count(*) FROM branches WHERE selected = 1').fetchone()[0], 20)
+                self.assertEqual(connection.execute('SELECT count(*) FROM scans').fetchone()[0], 0)
+            self.assertEqual(client.post(endpoint, json={'branch': 'main'}, headers=headers).status_code, 202)
+
     def test_rate_cap_invalid_branch_and_errors(self):
         headers = {'Authorization': 'Bearer '+'t'*32}
         with tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
