@@ -35,7 +35,8 @@ export function advisoryURL(id) {
 
 export function findingPage(findings, filter = "all", page = 0, size = 10) {
   const sorted = sortFindings(findings).filter(f => filter === "all" ||
-    (filter === "transitive_unknown" ? isTransitiveUnknown(f) :
+    (filter === "transitive_decided" ? f.reachability_analysis?.transitive_decided === true && f.reachability !== "unknown" :
+      filter === "transitive_unknown" ? isTransitiveUnknown(f) :
       filter === "production" ? f.reachability === "reachable" && findingScope(f) === "production" :
       filter === "nonproduction" ? f.reachability === "reachable" && ["test_only", "dev_tooling"].includes(findingScope(f)) :
         reachabilityPresentation(f.reachability).tone === filter));
@@ -129,12 +130,27 @@ export function dependencyPresentation(finding) {
 }
 
 export function findingPresentation(finding) {
-  const presentation = reachabilityPresentation(finding?.reachability);
+  let presentation = reachabilityPresentation(finding?.reachability);
+  const importLevel = finding?.reachability === "reachable" && finding?.reachability_analysis?.granularity === "import";
+  if (importLevel) presentation = { ...presentation,
+    headline: "Há um caminho estático de importações até o pacote.",
+    caveat: "Alcance no nível de importação: não comprova chamada do símbolo vulnerável, execução ou exploração." };
   const scope = findingScope(finding);
   if (finding?.reachability !== "reachable" || !scope) return presentation;
   return { ...presentation, label: scope === "production" ? "Alcançável em produção" : "Alcançável só em testes/ferramentas",
-    headline: scope === "production" ? presentation.headline : "Chamada encontrada em contexto de testes ou ferramentas.",
+    headline: importLevel || scope === "production" ? presentation.headline : "Chamada encontrada em contexto de testes ou ferramentas.",
     caveat: `${presentation.caveat} O contexto é inferido dos caminhos e do lockfile, não de execução em produção.` };
+}
+
+export function transitiveSteps(finding) {
+  const path = finding?.reachability_analysis?.transitive_path;
+  if (!Array.isArray(path)) return [];
+  return path.filter(step => step && typeof step.file === "string" && step.file &&
+    (step.line === null || Number.isInteger(step.line) && step.line > 0) && typeof step.specifier === "string")
+    .slice(0, 64).map(step => ({ ...step,
+      originLabel: step.kind === "grunt" ? "Gruntfile" : step.kind === "npm_script" ? `script npm · ${typeof step.label === "string" ? step.label : "scripts"}` : "Código do repositório",
+      url: typeof step.package === "string" && typeof step.version === "string"
+      ? `https://www.npmjs.com/package/${encodeURIComponent(step.package)}/v/${encodeURIComponent(step.version)}?activeTab=code` : null }));
 }
 
 export function scopeCounts(findings) {

@@ -802,3 +802,42 @@ test("public transitive bucket shows importing ancestor and never labels the fin
   assert.doesNotMatch(markup, /<strong>other<\/strong>/);
   assert.equal(findings[1].reachability, "unknown");
 });
+
+test("public report renders a safe transitive path and decided filter", async () => {
+  const finding = { id: "indirect", package_name: "b", reachability: "reachable", reachability_scope: "production", dependency_relation: "transitive",
+    reachability_analysis: { transitive_decided: true, granularity: "import", symbols: ["danger"], transitive_path: [
+      { package: null, version: null, file: "server.js", line: 5, specifier: "a" },
+      { package: "a", version: "1.0.0", file: "lib/<unsafe>.js", line: 4, specifier: "b", url: "javascript:evil()" },
+      { package: "b", version: "1.0.0", file: "index.js", line: null, specifier: "" },
+    ] } };
+  const app = harness(async () => ({ body: { status: "completed", source: "github", repository: "org/repo", commit_sha: "a".repeat(40),
+    findings: [finding], components: [], transitive_summary: { decided: 1 } } }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "public" } });
+  await app.openDetail("scan");
+  const markup = app.nodes.get("#report-findings").innerHTML;
+  assert.match(markup, /Do repositório ao pacote/);
+  assert.match(markup, /lib\/&lt;unsafe&gt;\.js:4/);
+  assert.match(markup, /https:\/\/www.npmjs.com\/package\/a\/v\/1.0.0/);
+  assert.doesNotMatch(markup, /href="javascript:/);
+  assert.match(markup, /data-filter="transitive_decided"/);
+  assert.match(markup, /símbolos do aviso.*não foram comprovados/);
+  assert.doesNotMatch(markup, /O código chama o alvo/);
+  assert.match(markup, /Existe um caminho estático de importações/);
+});
+
+test("tooling paths label Gruntfile and npm scripts without trusting metadata", () => {
+  const app = harness(() => ({}));
+  app.state.meta = { mode: "public" };
+  for (const [kind, label, expected] of [["grunt", "Gruntfile", /<strong>Gruntfile<\/strong>/],
+    ["npm_script", "scripts.<test>", /script npm · scripts\.&lt;test&gt;/]]) {
+    const html = app.findingMarkup({ ...evidenceFinding, reachability: "reachable", reachability_scope: "dev_tooling",
+      reachability_analysis: { granularity: "import", transitive_path: [
+        { package: null, version: null, file: "package.json", line: 3, specifier: "a", kind, label },
+        { package: "a", version: "1.0.0", file: "bin/a.js", line: null, specifier: "" },
+      ] } }, evidenceScan);
+    assert.match(html, expected);
+    assert.match(html, /Alcançável só em testes\/ferramentas/);
+    assert.doesNotMatch(html, /scripts\.<test>/);
+    assert.doesNotMatch(html, /O código chama o alvo/);
+  }
+});

@@ -53,6 +53,9 @@ class ReachabilityResult:
     dependency_note: str | None = None
     transitive_imported_via: bool = False
     lock_path: str | None = None
+    transitive_path: tuple[dict, ...] = ()
+    transitive_decided: bool = False
+    transitive_unknown_reason: str | None = None
 
     def analysis_dict(self) -> dict:
         return {"files_scanned": self.files_scanned, "language": self.language,
@@ -64,7 +67,10 @@ class ReachabilityResult:
                 "dependency_graph_complete": self.dependency_graph_complete,
                 "dependency_note": self.dependency_note,
                 "transitive_imported_via": self.transitive_imported_via,
-                "lock_path": self.lock_path}
+                "lock_path": self.lock_path,
+                "transitive_path": list(self.transitive_path),
+                "transitive_decided": self.transitive_decided,
+                "transitive_unknown_reason": self.transitive_unknown_reason}
 
 
 @dataclass(frozen=True)

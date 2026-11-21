@@ -17,6 +17,8 @@ Live is the default mode and denies installation access until configured. It sup
 
 For real public repositories without credentials or a GitHub App, set `SCA_MODE=public`, `SCA_PUBLIC_REPOSITORIES=OWASP/NodeGoat` (up to 10 comma-separated `owner/name` entries), `SCA_DASHBOARD_TOKEN` (at least 32 characters), and `SCA_PUBLIC_ORIGIN`. Sync installations, then scan the selected default branch. This mode uses GitHub smart HTTP and bounded, in-memory codeload snapshots (never api.github.com), real OSV, and the existing static analysis pipeline. Webhooks and simulated pushes are disabled; unknown is never safe.
 
+Public npm scans also trace static imports through bounded, integrity-checked registry tarballs pinned by the lockfile. Reports show versioned package/file/line paths; import-level reachability never claims a vulnerable-symbol call or exploitation. Unsupported entries, dynamic loads and exhausted budgets remain unknown. Package code is never installed, executed, imported or written to disk.
+
 See [backend setup and security boundaries](docs/backend.md), [dashboard behavior](docs/dashboard.md), and [optional AI explanations](docs/ai-explanations.md). This is a single-operator pilot, not multi-tenant SaaS authentication.
 
 ## Current offline demo
