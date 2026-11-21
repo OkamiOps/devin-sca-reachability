@@ -1,0 +1,20 @@
+{
+  "queries": [
+    {
+      "package": {
+        "purl": "pkg:pypi/fictional-demo-package@1.0.0"
+      },
+      "version": "1.0.0"
+    }
+  ],
+  "results": [
+    {
+      "vulns": [
+        {
+          "id": "DEMO-0001",
+          "summary": "Fictional fixture advisory; not a real vulnerability."
+        }
+      ]
+    }
+  ]
+}
