@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
-    <meta name="theme-color" content="#fcfcfa">
+    <meta name="theme-color" content="#18211f">
     <title>SCA Reachability · OkamiOps</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 28 10v12l-12 7L4 22V10Z' fill='none' stroke='%23cf5b21' stroke-width='2'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="/styles.css">
@@ -13,23 +13,27 @@
   <body>
     <a class="skip-link" href="#main" data-action="skip-main">Ir para o conteúdo</a>
     <div class="app-shell">
-      <header class="topbar">
+      <aside class="sidebar">
         <a href="#overview" class="brand" aria-label="OkamiOps SCA Reachability, visão geral">
           <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M16 3.5 27 9.8v12.4L16 28.5 5 22.2V9.8Z"/><path d="m11 12 5-2.7 5 2.7v7.5l-5 2.8-5-2.8Z"/></svg>
-          <span><strong>OKAMIOPS</strong><span>SCA REACHABILITY</span></span>
+          <span><strong>OkamiOps<span class="brand-dot">.</span></strong><span>REACHABILITY</span></span>
         </a>
-        <div class="topbar-actions"><span id="mode" class="badge muted">Verificando ambiente</span><button id="theme" class="icon-button" aria-label="Ativar tema escuro" title="Alternar tema">◐</button><button id="logout" class="quiet" hidden>Sair</button></div>
-      </header>
       <nav id="navigation" class="navigation" aria-label="Navegação principal" hidden>
-        <a href="#overview" data-view="overview">Visão geral</a>
-        <a href="#branches" data-view="branches">Branches monitoradas</a>
-        <a href="#results" data-view="results">Análises</a>
-        <a href="#activity" data-view="activity">Atividade</a>
+        <span class="nav-label">WORKSPACE</span>
+        <a href="#overview" data-view="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Visão geral</span></a>
+        <a href="#branches" data-view="branches"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M18 7v2a5 5 0 0 1-5 5H6"/></svg><span>Monitoramento</span></a>
+        <a href="#results" data-view="results"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8l4 4v14H4V3zM8 11h8M8 15h5"/></svg><span>Análises</span></a>
+        <a href="#activity" data-view="activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h5l3-8 4 16 3-8h5"/></svg><span>Atividade</span></a>
       </nav>
+      <div class="sidebar-bottom"><div class="sidebar-shield">SCA / DEPENDÊNCIAS</div><p>Evidência antes<br>de conclusões.</p><span>Um produto OkamiOps</span></div>
+      </aside>
+      <div class="workspace">
+      <header class="topbar"><div class="workspace-label"><span class="workspace-avatar">O</span><span>Security workspace<span class="topbar-separator">/</span><strong>SCA Reachability</strong></span></div><div class="topbar-actions"><span id="mode" class="badge muted">Verificando ambiente</span><button id="theme" class="icon-button" aria-label="Ativar tema escuro" title="Alternar tema">◐</button><button id="logout" class="quiet" hidden>Sair</button></div></header>
       <div id="environment-notice" class="environment-notice" hidden></div>
       <div id="notification" role="status" aria-live="polite" class="notification" hidden></div>
       <main id="main" tabindex="-1"><section class="initial-state" aria-busy="true"><span class="eyebrow">SCA REACHABILITY</span><h1>Preparando seu painel.</h1><p class="secondary">Consultando a conexão com o serviço…</p></section></main>
       <footer><span>OkamiOps <span aria-hidden="true">/</span> SCA Reachability</span><span>Desconhecido não significa inalcançável.</span></footer>
+      </div>
     </div>
     <dialog id="detail-dialog" aria-labelledby="detail-title"><p id="detail-announcement" class="sr-only" aria-live="polite" aria-atomic="true"></p><div id="detail-content"></div></dialog>
   </body>

@@ -78,6 +78,32 @@ test("results search finds advisory IDs and package names, including clean inven
   assert.match(app.scanTable(app.state.scans), /DEMO-0001/);
 });
 
+test("overview next step uses the scoped latest completed scan, not accumulated finding totals", () => {
+  const app = harness(() => ({}));
+  Object.assign(app.state, { meta: { mode: "demo" }, dashboard: { findings: 99 },
+    branches: [{ name: "main", selected: true }], installation: 1, repository: 2,
+    scans: [{ id: "pending", status: "running", finding_count: 99 }, { id: "latest", status: "completed", branch: "main", finding_count: 1 }] });
+  assert.match(app.overview(), /1 achado para revisar/);
+  assert.match(app.overview(), /data-id="latest"/);
+  assert.doesNotMatch(app.overview(), /99 achados para revisar/);
+  app.state.branches = [];
+  assert.match(app.overview(), /Escolha suas primeiras branches/);
+  assert.match(app.overview(), /class="attention-card"[\s\S]*Configurar branches →<\/a><\/section>/);
+});
+
+test("report section navigation keeps evidence, explanation, and inventory separately addressable", async () => {
+  const app = harness(() => ({ body: { status: "completed", source: "demo", findings: [], components: [], warnings: [] } }));
+  app.state.authenticated = true;
+  await app.openDetail("scan");
+  const html = app.nodes.get("#detail-content").innerHTML;
+  for (const section of ["report-findings", "report-explanation", "report-components", "report-limits"]) {
+    assert.ok(html.includes(`data-section="${section}"`));
+    assert.ok(html.includes(`id="${section}"`));
+  }
+  assert.match(html, /Não avaliado/);
+  assert.match(html, /não significa que o projeto está livre de vulnerabilidades/);
+});
+
 const evidenceFinding = { advisory_id: "DEMO-0001", package_name: "fictional-demo-package", version: "1.0.0",
   ecosystem: "npm", purl: "pkg:npm/fictional-demo-package@1.0.0", reachability: "unknown", fixed_versions: ["1.1.0"] };
 const evidenceScan = { status: "completed", source: "demo", repository: "fictional/repo", commit_sha: "a".repeat(40),
