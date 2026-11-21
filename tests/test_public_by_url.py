@@ -78,7 +78,7 @@ class PublicByURLTests(unittest.TestCase):
                         with client.app.state.database.transaction() as connection:
                             connection.execute('UPDATE jobs SET available_at = 0')
 
-    def app(self, directory, files=None, refs_status=200):
+    def app(self, directory, files=None, refs_status=200, presets=()):
         snapshot = archive(files if files is not None else {
             'root/requirements.txt': b'PyYAML==5.3\n',
             'root/main.py': b'import yaml\nyaml.load("hi")\n'})
@@ -93,8 +93,9 @@ class PublicByURLTests(unittest.TestCase):
                 'ecosystem_specific': {'imports': [{'symbols': ['load']}]}}]})
         transport = httpx.MockTransport(handler)
         settings = Settings.from_env({'SCA_MODE': 'public', 'SCA_DASHBOARD_TOKEN': 't'*32,
+            'SCA_PUBLIC_REPOSITORIES': ','.join(presets),
             'SCA_DATABASE_PATH': str(Path(directory)/'db.sqlite3'), 'SCA_PUBLIC_ORIGIN': 'https://testserver'})
-        adapter = PublicGitHubAdapter((), httpx.Client(transport=transport))
+        adapter = PublicGitHubAdapter(presets, httpx.Client(transport=transport))
         return create_app(settings, github_adapter=adapter, osv_adapter=OsvClient(httpx.Client(transport=transport)), worker_enabled=False)
 
     def test_pipeline_registration_progress_restart_and_unknown_not_safe(self):
@@ -166,6 +167,29 @@ class PublicByURLTests(unittest.TestCase):
             healthy = next(r for r in repos if r['full_name'] == 'a/healthy')
             branches = client.get(f"/api/installations/9003/repositories/{healthy['id']}/branches", headers=headers).json()['items']
             self.assertEqual({b['name'] for b in branches}, {'main', 'release'})
+
+    def test_cap_counts_inactive_repositories_and_presets_after_restart(self):
+        headers = {'Authorization': 'Bearer '+'t'*32}
+        for stored_count in (1, 2):
+            with self.subTest(stored_count=stored_count), tempfile.TemporaryDirectory() as directory, patch('sca_reachability.server.public_repositories.MAX_REPOSITORIES', 2):
+                with TestClient(self.app(directory)) as client:
+                    for name in ('a/inactive', 'a/active')[:stored_count]:
+                        client.post('/api/public/repositories', json={'url': name}, headers=headers).raise_for_status()
+                    with client.app.state.database.transaction() as connection:
+                        connection.execute("UPDATE repositories SET active = 0 WHERE full_name = 'a/inactive'")
+                with TestClient(self.app(directory, presets=('a/preset',))) as client:
+                    self.assertEqual(len(client.app.state.worker.github.repositories), stored_count + 1)
+                    response = client.post('/api/public/repositories', json={'url': 'a/preset'}, headers=headers)
+                    expected = 200 if stored_count == 1 else 409
+                    self.assertEqual(response.status_code, expected, response.text)
+                    response = client.post('/api/installations/sync', headers=headers)
+                    self.assertEqual(response.status_code, expected, response.text)
+                    if stored_count == 2:
+                        self.assertEqual(response.json()['code'], 'repository_cap')
+                    self.assertEqual(client.post('/api/public/repositories', json={'url': 'a/new'}, headers=headers).json()['code'], 'repository_cap')
+                    self.assertEqual(client.post('/api/public/repositories', json={'url': 'a/inactive'}, headers=headers).status_code, 200)
+                    with client.app.state.database.connection() as connection:
+                        self.assertEqual(connection.execute('SELECT count(*) FROM repositories').fetchone()[0], 2)
 
     def test_sync_reports_failure_when_every_preset_lookup_fails(self):
         headers = {'Authorization': 'Bearer '+'t'*32}

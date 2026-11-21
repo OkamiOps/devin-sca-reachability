@@ -18,7 +18,7 @@ class PublicRepositories:
 
     def restore(self):
         with self.database.connection() as connection:
-            for row in connection.execute('SELECT id, full_name FROM repositories WHERE installation_id = 9003 AND active = 1'):
+            for row in connection.execute('SELECT id, full_name FROM repositories WHERE installation_id = 9003'):
                 self.github.repositories[row['id']] = row['full_name']
 
     def register(self, value, session):
@@ -34,8 +34,9 @@ class PublicRepositories:
             with self.database.connection() as connection:
                 stored = connection.execute('SELECT id FROM repositories WHERE installation_id = 9003').fetchall()
                 repo_id = self.github.repository_id(name)
-                known = {r['id'] for r in stored} | set(self.github.repositories)
-                if repo_id not in known and len(known) >= MAX_REPOSITORIES:
+                stored_ids = {r['id'] for r in stored}
+                known = stored_ids | set(self.github.repositories)
+                if repo_id not in stored_ids and len(known | {repo_id}) > MAX_REPOSITORIES:
                     raise PublicError('repository_cap', 'Limite de 25 repositórios atingido. Use um repositório já registrado.', 409)
             branches, default = self.github._refs(name)
             if requested is not None and requested not in branches:
@@ -48,7 +49,9 @@ class PublicRepositories:
 
     def sync(self):
         with self.lock:
-            if len(self.github.repositories) > MAX_REPOSITORIES:
+            with self.database.connection() as connection:
+                stored_ids = {row['id'] for row in connection.execute('SELECT id FROM repositories WHERE installation_id = 9003')}
+            if len(stored_ids | set(self.github.repositories)) > MAX_REPOSITORIES:
                 raise PublicError('repository_cap', 'Limite de 25 repositórios atingido.', 409)
             records, unavailable, failures = [], [], []
             for repo_id, name in self.github.repositories.items():
