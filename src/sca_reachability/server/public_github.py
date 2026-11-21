@@ -50,21 +50,24 @@ def parse_refs(data: bytes) -> tuple[dict[str, str], str]:
     return branches, default
 
 
-def parse_tarball(data: bytes) -> tuple[list[dict], dict[str, bytes]]:
+def parse_tarball(data: bytes, *, max_compressed=None, max_uncompressed=None, max_entries=None) -> tuple[list[dict], dict[str, bytes]]:
+    max_compressed = MAX_COMPRESSED if max_compressed is None else max_compressed
+    max_uncompressed = MAX_UNCOMPRESSED if max_uncompressed is None else max_uncompressed
+    max_entries = MAX_ENTRIES if max_entries is None else max_entries
     tree, blobs = [], {}
     total = 0
     root = None
     seen = set()
     try:
-        if len(data) > MAX_COMPRESSED:
+        if len(data) > max_compressed:
             raise ScanError('Public snapshot exceeds the compressed size limit.')
         with gzip.GzipFile(fileobj=io.BytesIO(data)) as compressed:
-            unpacked = compressed.read(MAX_UNCOMPRESSED + 1)
-        if len(unpacked) > MAX_UNCOMPRESSED:
+            unpacked = compressed.read(max_uncompressed + 1)
+        if len(unpacked) > max_uncompressed:
             raise ScanError('Public snapshot exceeds the uncompressed size limit.')
         with tarfile.open(fileobj=io.BytesIO(unpacked), mode='r|') as archive:
             for index, member in enumerate(archive):
-                if index >= MAX_ENTRIES:
+                if index >= max_entries:
                     raise ScanError('Public snapshot has too many entries.')
                 parts = member.name.rstrip('/').split('/')
                 if any(p in {'', '.', '..'} for p in parts) or member.name.startswith('/') or '\\' in member.name or '\0' in member.name:
@@ -81,7 +84,7 @@ def parse_tarball(data: bytes) -> tuple[list[dict], dict[str, bytes]]:
                     raise ScanError('Public snapshot has duplicate paths.')
                 seen.add(path)
                 total += member.size
-                if total > MAX_UNCOMPRESSED:
+                if total > max_uncompressed:
                     raise ScanError('Public snapshot exceeds the uncompressed size limit.')
                 if member.issym() or member.islnk():
                     content = member.linkname.encode('utf-8')
@@ -90,7 +93,7 @@ def parse_tarball(data: bytes) -> tuple[list[dict], dict[str, bytes]]:
                     stream = archive.extractfile(member)
                     if stream is None:
                         raise ScanError('Public snapshot file is unavailable.')
-                    content = stream.read(MAX_UNCOMPRESSED + 1)
+                    content = stream.read(max_uncompressed + 1)
                     if len(content) != member.size:
                         raise ScanError('Public snapshot file is incomplete.')
                     mode = '100755' if member.mode & 0o111 else '100644'

@@ -2,6 +2,20 @@
 .finding-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 12px; }
 .finding-filters button { min-height: 44px; min-width: 0; border-radius: 9px; white-space: normal; }
 .dependency-context { overflow-wrap: anywhere; }
+.transitive-trace { margin: 20px 0; padding: 22px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.trace-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.trace-chip { border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; font-size: 10px; color: var(--accent); background: var(--warm); }
+.transitive-trace h4 { margin: 12px 0 8px; font-size: 19px; }
+.transitive-trace ol { list-style: none; margin: 24px 0 0; padding: 0; }
+.transitive-trace li { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 14px; padding-bottom: 24px; }
+.transitive-trace li:not(:last-child)::after { content: ''; position: absolute; left: 13px; top: 32px; bottom: 6px; width: 1px; background: var(--border); }
+.transitive-trace li:last-child { padding-bottom: 0; }
+.trace-number { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--warm); color: var(--accent); font-size: 11px; border: 1px solid var(--border); }
+.trace-step { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 3px; overflow-wrap: anywhere; }
+.trace-step strong { font-size: 12px; }
+.trace-file, .trace-step > a { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; min-width: 44px; max-width: 100%; white-space: normal; }
+.trace-load { display: block; max-width: 100%; font-size: 11px; color: var(--text-muted); }
+@media (max-width: 480px) { .transitive-trace { padding: 16px 12px; } .transitive-trace li { gap: 10px; } }
 .finding-filters button[aria-pressed="true"] { background: var(--warm); color: var(--accent); border-color: var(--accent); }
 .finding-filters span { margin-left: 6px; font-variant-numeric: tabular-nums; }
 .scope-summary { font-size: 12px; font-weight: 500; line-height: 1.7; }

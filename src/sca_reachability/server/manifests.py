@@ -41,6 +41,9 @@ class LockedComponent:
     dependency_graph_complete: bool = True
     dependency_graph_reason: str | None = None
     entry_commands: tuple[str, ...] = ()
+    resolved: str | None = None
+    integrity: str | None = None
+    dependency_edges: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -169,6 +172,7 @@ def _npm_graph(packages: dict, components: list[LockedComponent]) -> list[Locked
     return [replace(component,
                     dependency_relation="direct" if component.lock_path in direct_paths else "transitive",
                     dependency_via=tuple(chains[component.lock_path]),
+                    dependency_edges=tuple(edges.get(component.lock_path, ())),
                     dependency_graph_complete=not issues and bool(chains[component.lock_path]),
                     dependency_graph_reason=reason or (None if chains[component.lock_path] else
                         "Grafo npm incompleto: pacote sem caminho a partir das dependências diretas."))
@@ -217,6 +221,8 @@ def _parse_package_lock(
                 manifest_path=manifest_path,
                 dev=package.get("dev") is True,
                 lock_path=lock_path,
+                resolved=package.get("resolved") if isinstance(package.get("resolved"), str) else None,
+                integrity=package.get("integrity") if isinstance(package.get("integrity"), str) else None,
                 entry_commands=tuple(name for name in (
                     package.get("bin", {}).keys() if isinstance(package.get("bin"), dict)
                     else [name.rsplit("/", 1)[-1]] if isinstance(package.get("bin"), str) else []

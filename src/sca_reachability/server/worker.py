@@ -11,6 +11,8 @@ from sca_reachability.server.manifests import inventory_manifests
 from sca_reachability.server.osv_client import Advisory, OsvAdapter
 from sca_reachability.server.service import authorized_scope
 from sca_reachability.server.sources import collect_sources, reachability_for
+from sca_reachability.server.npm_sources import NpmSources
+from sca_reachability.server.transitive import trace_transitives
 from sca_reachability.static_reachability import SourceCoverage
 
 
@@ -27,12 +29,14 @@ class ScanWorker:
         github: GitHubAdapter,
         osv: OsvAdapter,
         ai_provider=None,
+        npm_sources_factory=None,
     ):
         self.database = database
         self.settings = settings
         self.github = github
         self.osv = osv
         self.ai_provider = ai_provider
+        self.npm_sources_factory = npm_sources_factory or NpmSources
         self._stopping = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -238,6 +242,9 @@ class ScanWorker:
         if any(advisories):
             coverage = collect_sources(tree, lambda blob_sha: self._read_blob(job, blob_sha))
         reachability = reachability_for(inventory.components, advisories, coverage)
+        if self.settings.mode == "public" and any(advisories):
+            with self.npm_sources_factory() as package_sources:
+                reachability = trace_transitives(inventory.components, reachability, coverage, package_sources)
         self._ensure_authorized(job)
         return inventory, advisories, demo_sources, reachability
 

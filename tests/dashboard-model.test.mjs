@@ -5,11 +5,32 @@ import { readFile } from "node:fs/promises";
 // No package.json or build is needed to exercise the browser's pure ES module.
 const source = await readFile(new URL("../src/sca_reachability/static/model.js", import.meta.url), "utf8");
 const { escapeHTML, count, isDirty, reachabilityLabel, explanationPresentation, scopedRepositoryPath, formatDate, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
-const { supportedMode, githubLink, advisoryURL, findingPage, findingScope, findingPresentation, scopeCounts, scopeSummary, dependencyPresentation, isTransitiveUnknown } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const { supportedMode, githubLink, advisoryURL, findingPage, findingScope, findingPresentation, scopeCounts, scopeSummary, dependencyPresentation, isTransitiveUnknown, transitiveSteps } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 
 test("public is a supported mode, but unknown modes are rejected", () => {
   for (const mode of ["demo", "live", "public"]) assert.equal(supportedMode(mode), true);
   for (const mode of [null, undefined, "PUBLIC", "__proto__", ""]) assert.equal(supportedMode(mode), false);
+});
+
+test("transitive paths encode npm links and preserve import-level semantics", () => {
+  const finding = { reachability: "reachable", reachability_scope: "test_only", reachability_analysis: {
+    transitive_decided: true, granularity: "import", transitive_path: [
+      { package: null, version: null, file: "server.js", line: 5, specifier: "a" },
+      { package: "@scope/a", version: "1.0.0", file: "index.js", line: 8, specifier: "b", url: "javascript:evil()" },
+      { package: "b", version: "2.0.0", file: "lib/b.js", line: null, specifier: "" },
+      null, { file: "bad", line: -1, specifier: "b" },
+    ],
+  } };
+  const steps = transitiveSteps(finding);
+  assert.equal(steps.length, 3);
+  assert.equal(steps[1].url, "https://www.npmjs.com/package/%40scope%2Fa/v/1.0.0?activeTab=code");
+  assert.equal(steps[0].url, null);
+  assert.match(findingPresentation(finding).headline, /importações/);
+  assert.doesNotMatch(findingPresentation(finding).headline, /Chamada encontrada/);
+  assert.match(findingPresentation(finding).caveat, /não comprova chamada/);
+  assert.equal(findingPage([finding, { reachability: "unknown", reachability_analysis: { transitive_decided: true } }], "transitive_decided").total, 1);
+  assert.deepEqual(transitiveSteps(null), []);
+  assert.deepEqual(transitiveSteps({ reachability_analysis: { transitive_path: "bad" } }), []);
 });
 test("GitHub links use the exact commit and safely encoded source path and line", () => {
   const scan = { source: "github", repository: "owner/repo", commit_sha: "a".repeat(40) };

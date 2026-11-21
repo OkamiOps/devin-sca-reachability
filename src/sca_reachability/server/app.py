@@ -51,6 +51,20 @@ SCAN_FIELDS = (
 )
 
 
+def transitive_summary(findings):
+    summary = {"decided": 0, "reachable": 0, "unreachable": 0, "unknown_reasons": {}}
+    for finding in findings:
+        analysis = finding.get("reachability_analysis", {})
+        status = finding.get("reachability")
+        if analysis.get("transitive_decided") is True and status in {"reachable", "unreachable"}:
+            summary["decided"] += 1
+            summary[status] += 1
+        elif status == "unknown" and analysis.get("transitive_unknown_reason"):
+            reason = analysis["transitive_unknown_reason"]
+            summary["unknown_reasons"][reason] = summary["unknown_reasons"].get(reason, 0) + 1
+    return summary
+
+
 async def _json_object(request: Request) -> dict:
     try:
         value = json.loads(await request.body())
@@ -68,6 +82,7 @@ def create_app(
     osv_adapter=None,
     ai_provider=None,
     worker_enabled: bool = True,
+    npm_sources_factory=None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     database = Database(settings.database_path)
@@ -93,7 +108,8 @@ def create_app(
                     }
                 )
         app.state.ai_configured = provider is not None
-        worker = ScanWorker(database, settings, github, osv, ai_provider=provider)
+        worker = ScanWorker(database, settings, github, osv, ai_provider=provider,
+                            npm_sources_factory=npm_sources_factory)
         app.state.worker = worker
         try:
             if settings.mode == "demo":
@@ -374,6 +390,7 @@ def create_app(
                 {**{key: row[key] for key in SCAN_FIELDS}, "advisory_ids": [], "package_names": [],
                  "reachability_counts": {"reachable": 0, "unreachable": 0, "unknown": 0},
                  "transitive_imported_unknown_count": 0,
+                 "transitive_summary": transitive_summary([]),
                  "reachability_scope_counts": {"production": 0, "test_only": 0, "dev_tooling": 0, "unreported": 0}}
                 for row in rows
             ]
@@ -395,6 +412,12 @@ def create_app(
                     WHERE scan_id IN ({placeholders})""", list(by_id),
                 ):
                     analysis = json.loads(item["reachability_analysis_json"])
+                    summary = by_id[item["scan_id"]]["transitive_summary"]
+                    partial = transitive_summary([{"reachability": item["reachability"], "reachability_analysis": analysis}])
+                    for key in ("decided", "reachable", "unreachable"):
+                        summary[key] += partial[key]
+                    for key, value in partial["unknown_reasons"].items():
+                        summary["unknown_reasons"][key] = summary["unknown_reasons"].get(key, 0) + value
                     if item["reachability"] == "reachable":
                         scope = analysis.get("scope")
                         key = scope if scope in {"production", "test_only", "dev_tooling"} else "unreported"
@@ -447,6 +470,7 @@ def create_app(
                 finding["dependency_via"] = finding["reachability_analysis"].get("dependency_via", [])
                 findings.append(finding)
             result["findings"] = findings
+            result["transitive_summary"] = transitive_summary(findings)
             result["warnings"] = [item["warning"] for item in connection.execute(
                 "SELECT warning FROM scan_warnings WHERE scan_id = ? ORDER BY ordinal", (scan_id,),
             ).fetchall()]
