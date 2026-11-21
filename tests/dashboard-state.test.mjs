@@ -19,7 +19,7 @@ function harness(responder) {
       innerHTML: "", textContent: "", hidden: true, open: false,
       listeners: {}, classList: { toggle() {} }, setAttribute() {},
       addEventListener(name, handler) { this.listeners[name] = handler; },
-      contains() { return false; }, focus(options) { this.focusOptions = options; }, replaceChildren() {},
+      contains() { return false; }, focus(options) { this.focusOptions = options; }, replaceChildren() {}, scrollIntoView() {},
       close() { this.open = false; this.listeners.close?.(); }, showModal() { this.open = true; },
     });
     return nodes.get(selector);
@@ -711,4 +711,94 @@ test("a late branch response cannot overwrite a more recent installation scope",
   assert.equal(app.state.installation, 3);
   assert.equal(app.state.repository, 4);
   assert.equal(app.state.branches[0].name, "new");
+});
+
+test("public login identifies the operator token without a demo hint", async () => {
+  const app = harness(async path => path === "/api/meta" ? { body: { mode: "public", github_configured: true } } : { status: 401 });
+  await app.boot();
+  const html = app.nodes.get("#main").innerHTML;
+  assert.match(html, /SCA_DASHBOARD_TOKEN/);
+  assert.doesNotMatch(html, /local-demo|demo-login|CONEXÃO INDISPONÍVEL/);
+  assert.match(app.nodes.get("#mode").outerHTML, /GitHub público/);
+});
+
+test("public report keeps only one page and its filters do not change classifications", async () => {
+  const findings = Array.from({ length: 437 }, (_, id) => ({ id: `CVE-2024-${1000 + id}`, reachability: id < 422 ? "unknown" : "reachable", package_name: "example", version: "1.0.0" }));
+  const app = harness(async () => ({ body: { status: "completed", source: "github", repository: "org/repo", commit_sha: "a".repeat(40), findings, components: [] } }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "public" } });
+  await app.openDetail("scan");
+  const markup = () => app.nodes.get("#report-findings").innerHTML;
+  assert.equal((markup().match(/<article /g) || []).length, 10);
+  assert.match(markup(), /Alcançável/); assert.doesNotMatch(markup(), /<details open>/);
+  assert.match(app.nodes.get("#detail-content").innerHTML, /Origem: GitHub público/);
+  assert.match(app.nodes.get("#detail-content").innerHTML, /github.com\/org\/repo\/commit\/a{40}/);
+  const target = { dataset: { action: "finding-filter", filter: "unknown" } };
+  await app.events.get("click")({ target: { closest() { return target; } } });
+  assert.equal(app.state.findingFilter, "unknown");
+  assert.match(markup(), /422 achados/);
+  assert.equal(findings[0].reachability, "unknown");
+  target.dataset.filter = "unreachable";
+  await app.events.get("click")({ target: { closest() { return target; } } });
+  assert.match(markup(), /Nenhum achado neste filtro/);
+});
+
+test("public report exposes context filters, production ordering and local-load notes outside collapsed evidence", async () => {
+  const findings = [
+    { id: "test", reachability: "reachable", reachability_scope: "test_only", package_name: "test-pkg" },
+    { id: "unknown", reachability: "unknown", reachability_scope: "production", package_name: "uncertain-pkg" },
+    { id: "prod", reachability: "reachable", reachability_scope: "production", package_name: "prod-pkg", reachability_analysis: {
+      notes: [{ kind: "local_load", path: "config/config.js", line: 7, detail: "local file" }],
+    } },
+    { id: "dev", reachability: "reachable", reachability_scope: "dev_tooling", package_name: "dev-pkg", reachability_analysis: { dependency_dev: true } },
+  ];
+  const app = harness(async () => ({ body: { status: "completed", source: "github", repository: "org/repo", commit_sha: "a".repeat(40), findings, components: [] } }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "public" } });
+  await app.openDetail("scan");
+  const markup = () => app.nodes.get("#report-findings").innerHTML;
+  assert.ok(markup().indexOf("prod-pkg") < markup().indexOf("test-pkg"));
+  assert.match(markup(), /1 alcançáveis em produção · 2 só em testes\/ferramentas/);
+  assert.match(markup(), /Alcançável em produção/);
+  assert.match(markup(), /Alcançável só em testes\/ferramentas/);
+  assert.match(markup(), /Lockfile: dependência de desenvolvimento/);
+  assert.ok(markup().indexOf("Nota de análise") < markup().indexOf("<details>"));
+  assert.match(markup(), /blob\/a{40}\/config\/config.js#L7/);
+  for (const [filter, included, excluded] of [
+    ["production", "prod-pkg", "test-pkg"], ["nonproduction", "test-pkg", "prod-pkg"],
+    ["unknown", "uncertain-pkg", "prod-pkg"],
+  ]) {
+    const target = { dataset: { action: "finding-filter", filter } };
+    await app.events.get("click")({ target: { closest() { return target; } } });
+    assert.ok(markup().includes(included));
+    assert.ok(!markup().includes(excluded));
+  }
+  assert.match(markup(), /Desconhecido não significa seguro/);
+  app.state.scans = [{ status: "completed", finding_count: 4, reachability_counts: { reachable: 3, unknown: 1, unreachable: 0 }, reachability_scope_counts: { production: 1, test_only: 1, dev_tooling: 1 } }];
+  app.state.installation = 9003; app.state.repository = 1;
+  app.state.branches = [{ name: "main", selected: true }];
+  assert.match(app.overview(), /1 alcançáveis em produção · 2 só em testes\/ferramentas/);
+});
+
+test("public transitive bucket shows importing ancestor and never labels the finding unreachable", async () => {
+  const findings = [
+    { id: "direct", package_name: "body-parser", reachability: "reachable", reachability_scope: "production", dependency_relation: "direct" },
+    { id: "indirect", package_name: "qs", reachability: "unknown", reachability_scope: "production", dependency_relation: "transitive",
+      dependency_via: [["body-parser", "qs"]], reachability_reason: "Dependência transitiva via body-parser, importado em server.js:5; o código intermediário não foi analisado.",
+      reachability_analysis: { transitive_imported_via: true },
+      reachability_evidence: [{ path: "server.js", line: 5, kind: "transitive_import", detail: "require('body-parser')" }] },
+    { id: "other", package_name: "other", reachability: "unknown" },
+  ];
+  const app = harness(async () => ({ body: { status: "completed", source: "github", repository: "org/repo", commit_sha: "a".repeat(40), findings, components: [] } }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "public" } });
+  await app.openDetail("scan");
+  assert.match(app.nodes.get("#report-findings").innerHTML, />Direta</);
+  const target = { dataset: { action: "finding-filter", filter: "transitive_unknown" } };
+  await app.events.get("click")({ target: { closest() { return target; } } });
+  const markup = app.nodes.get("#report-findings").innerHTML;
+  assert.equal((markup.match(/<article /g) || []).length, 1);
+  assert.match(markup, /Transitiva via body-parser/);
+  assert.match(markup, /importado em server.js:5/);
+  assert.match(markup, /Importa intermediária/);
+  assert.match(markup, /Desconhecido não significa seguro/);
+  assert.doesNotMatch(markup, /<strong>other<\/strong>/);
+  assert.equal(findings[1].reachability, "unknown");
 });

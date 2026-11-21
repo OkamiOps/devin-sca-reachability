@@ -44,10 +44,27 @@ class ReachabilityResult:
     language: str | None = None
     granularity: str | None = None
     symbols: tuple[str, ...] = ()
+    scope: str | None = None
+    dependency_dev: bool = False
+    notes: tuple[ReachabilityEvidence, ...] = ()
+    dependency_relation: str = "direct"
+    dependency_via: tuple[tuple[str, ...], ...] = ()
+    dependency_graph_complete: bool = True
+    dependency_note: str | None = None
+    transitive_imported_via: bool = False
+    lock_path: str | None = None
 
     def analysis_dict(self) -> dict:
         return {"files_scanned": self.files_scanned, "language": self.language,
-                "granularity": self.granularity, "symbols": list(self.symbols)}
+                "granularity": self.granularity, "symbols": list(self.symbols),
+                "scope": self.scope, "dependency_dev": self.dependency_dev,
+                "notes": [note.to_dict() for note in self.notes],
+                "dependency_relation": self.dependency_relation,
+                "dependency_via": [list(chain) for chain in self.dependency_via],
+                "dependency_graph_complete": self.dependency_graph_complete,
+                "dependency_note": self.dependency_note,
+                "transitive_imported_via": self.transitive_imported_via,
+                "lock_path": self.lock_path}
 
 
 @dataclass(frozen=True)

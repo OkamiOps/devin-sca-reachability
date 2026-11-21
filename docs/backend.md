@@ -40,6 +40,29 @@ Use HTTPS com proxy confiável em live. Configure SCA_PUBLIC_ORIGIN com a origem
 
 ## Sessões e API
 
+### Repositórios públicos sem GitHub App
+
+```sh
+export SCA_MODE=public
+export SCA_PUBLIC_REPOSITORIES='OWASP/NodeGoat'
+export SCA_DASHBOARD_TOKEN='<token-aleatorio-com-pelo-menos-32-caracteres>'
+export SCA_PUBLIC_ORIGIN='http://127.0.0.1:8010'
+export SCA_DATABASE_PATH='./public.sqlite3'
+.venv/bin/sca-reachability-serve --port 8010
+```
+
+Após login, sincronize instalações e dispare a análise da branch padrão (selecionada inicialmente). A instalação sintética 9003, “Repositórios públicos”, contém somente os nomes configurados. `SCA_PUBLIC_REPOSITORIES` aceita até dez entradas estritas `owner/name`; vazio deixa GitHub não configurado. IDs sintéticos de repositório são estáveis. O token segue a regra live; nenhuma credencial GitHub é necessária. IA permanece desabilitada neste modo. `/api/meta` informa `public` e configuração real; os scans usam source `github` por compatibilidade com SQLite. Webhooks e `/api/demo/push` retornam 404. A opção de origens loopback continua exclusiva de demo.
+
+Não há chamadas a api.github.com: branches, HEAD simbólico e SHA vêm do anúncio smart HTTP de refs; o snapshot vem de codeload no SHA exato. Download máximo de 32 MiB comprimidos; tar descomprimido (inclusive headers) de até 64 MiB e 30.000 entradas. Tudo permanece em memória: nenhum arquivo monitorado é gravado, executado, instalado ou importado. Apenas um commit fica no cache; blobs recebem SHA Git real. Symlinks/hardlinks não são seguidos e viram entradas 120000, sinalizadas como lacuna pelo pipeline. Caminhos inseguros, arquivos especiais, limites excedidos e snapshots inválidos falham explicitamente, nunca geram resultado “seguro”. Redirects HTTPS são aceitos somente para github.com/codeload.github.com, no máximo três saltos. Rede pública pode falhar ou limitar tráfego; não há garantia de disponibilidade. Reachability e evidências seguem o mesmo worker estático; unknown nunca significa seguro e IA não altera classificação.
+
+O cookie public mantém Secure, HttpOnly, SameSite=strict e Path=/api, como live. Login e envio do cookie Secure foram verificados no Chrome via `http://127.0.0.1:8010`; não foi necessário remover Secure. Use HTTPS fora do ambiente local.
+
+O dashboard identifica GitHub público, oferece Analisar agora, links OSV e links de commit/arquivo/linha fixados no SHA. Relatórios públicos têm filtros por alcance com contagens e páginas de dez achados, alcançáveis primeiro; evidências começam recolhidas.
+
+As cargas `require(path.resolve(__dirname + "/../config/env/..."))` do NodeGoat são reconhecidas como caminhos locais, inclusive com seleção dinâmica de ambiente. Elas geram notas visíveis, não incerteza sobre nomes de pacotes. Isso não resolve o ambiente de execução nem analisa código transitivo de dependências: inalcançável continua limitado aos fontes coletados naquele commit, nunca é um selo de segurança.
+
+A ausência de importação direta não prova que uma dependência transitiva é inalcançável: por exemplo, body-parser é importado em server.js:5 e pode usar qs internamente. Esses casos exigem revisão e permanecem desconhecidos; o código dos pacotes intermediários não foi analisado.
+
 `GET /api/meta` é público e revela somente modo e booleanos de configuração. Login `POST /api/session` recebe `{"token":"..."}`, requer Origin da própria origem e `X-SCA-Request: 1`, responde 200 `{"authenticated":true}`. O cookie opaco é HttpOnly, SameSite=strict, expira em oito horas e só seu SHA-256 é persistido. Logout `DELETE /api/session` responde 204 e revoga o hash. Todas as demais APIs, exceto webhook, exigem bearer token ou sessão. Mutações por cookie exigem o mesmo header e validação de Origin; bearer não substitui a allowlist.
 
 Principais rotas (listas usam `{"items":[...]}`):
@@ -83,7 +106,27 @@ Testes backend usam banco temporário, adapters fake e httpx.MockTransport; bloq
 After correlation, the worker reads (never executes, installs, or imports) up to a bounded number of `.js/.jsx/.mjs/.cjs/.ts/.tsx` and `.py` blobs from the scanned commit and runs `sca_reachability.static_reachability`:
 
 - **reachable**: the package is imported and the advisory's vulnerable symbol (OSV `affected_functions`/`imports[].symbols`) is called, or the package is called when the advisory names no symbol.
-- **unreachable**: sources cover the manifest and the package is never imported, or it is imported but the vulnerable symbol is never called. Valid only for that commit and the analyzer's coverage.
+- **unreachable**: sources cover the manifest and the package is never imported, or it is imported but the vulnerable symbol is never called. npm additionally requires the lockfile graph checks below. Valid only for that commit and the analyzer's coverage, never a guarantee of safety.
 - **unknown**: dynamic `import()`/`require()`/`importlib`/`getattr`, indirect references, parse errors, star imports, or incomplete coverage (limits, symlinks, non-UTF-8, unavailable blobs). Unknown is never presented as safe.
 
 Each finding stores up to 6 evidence items (`path`, `line`, `kind`, `detail`, `snippet`) in `reachability_evidence` plus `reachability_analysis` (files scanned, language, granularity, symbols). Existing databases migrate automatically.
+
+### Contexto e cargas locais
+
+`reachability_scope` na API é `production`, `test_only` ou `dev_tooling`. É um contexto inferido, não comprovação de execução/deploy: considera primeiro os caminhos das chamadas (senão, importações; sem ambas, contexto do manifesto). Diretórios test/tests/__tests__/spec, arquivos *.test.*/*.spec.* e convenções Python test_*.py/*_test.py identificam testes; Gruntfile/gulpfile/webpack e scripts/build/configurações de ferramentas identificam tooling. Uma chamada de produção prevalece sobre chamadas de teste, mas `dev: true` na entrada package-lock impede rotulá-la como dependência de produção. Isso não muda reachable/unreachable/unknown. Evidências de produção são priorizadas antes do limite de seis itens.
+
+O contexto, a flag `dependency_dev` e até seis notas `local_load` ficam no JSON `reachability_analysis` já persistido pelo worker, sem nova coluna ou migração. Relatórios antigos sem esse contexto continuam não informados, nunca são promovidos a produção. Listagens incluem `reachability_scope_counts` apenas de alcançáveis; `unreported` conta os legados. Dashboard, próximos passos e filtros separam produção de testes/ferramentas; desconhecido continua exigindo revisão.
+
+No JavaScript, concatenações/templates com prefixo local fixo (`./`, `../`, `/`, `__dirname`, `__filename`) e path.resolve com base local fixa não bloqueiam prova negativa por si sós. path.join aceita bases absolutas ou que preservem `../`: `path.join("./config", nome)` normaliza para um possível nome de pacote e **continua desconhecido**. Prefixos contendo node_modules, bases variáveis, expressões condicionais/operadores não comprovados e outras cargas dinâmicas continuam incerteza. Lacunas de cobertura ainda impedem inalcançável; notas não as suprimem. Python mantém o tratamento conservador anterior de importações dinâmicas.
+
+### Dependências npm diretas e transitivas
+
+As declarações dependencies/devDependencies/optionalDependencies/peerDependencies de `packages[""]` identificam as entradas diretas, resolvidas no node_modules da raiz. Outra versão aninhada do mesmo nome continua transitiva. Para cada pacote, o grafo lê dependencies e também optionalDependencies/peerDependencies, resolvendo cada nome pelo node_modules mais próximo e subindo os diretórios. Não usa devDependencies dos pacotes intermediários. Todo pin requirements.txt permanece direto, sem inferir grafo Python.
+
+Uma transitiva só recebe inalcançável se o grafo estiver completo e todos os ancestrais diretos, por qualquer caminho, não forem importados com cobertura completa e sem incerteza bloqueante; a própria transitiva também não pode ter uso/importação ou incerteza nos fontes. Uma declaração direta também não permite ignorar seu uso por outro ancestral direto importado. Grafo ausente, órfãos, dependências não resolvidas, entradas não suportadas ou limites excedidos produzem desconhecido, nunca uma prova negativa. Limites: 5.000 nós, 50.000 arestas/visitas e 32 nomes por caminho. Ciclos são tratados com conjuntos de visitados; guarda-se um caminho curto por ancestral direto, sem perder ancestrais que chegam por outras rotas.
+
+Não se infere alcançável por transitividade. Uma importação direta do ancestral gera desconhecido com nota visível e evidência da importação; fontes que citam a própria transitiva também não comprovam sua versão instalada. `dependency_relation` e `dependency_via` são expostos no achado e persistidos no JSON de análise, junto de `lock_path`, `dependency_graph_complete`, `dependency_note` e `transitive_imported_via`. Sem migração adicional. Dados legados sem relação ficam não informados. O filtro “Transitivas · import/CLI” e `transitive_imported_unknown_count` nas listagens tornam esse subconjunto dos desconhecidos legível; ele não significa seguro.
+
+A auditoria manual também identificou entradas de ferramentas que não usam require: `grunt.loadNpmTasks("pacote")` conta como importação estática; nome dinâmico bloqueia prova negativa. O coletor lê package.json em memória apenas como metadado de scripts (não instala nem executa nada). Referências nos scripts aos nomes dos pacotes ou aliases bin do lockfile são entradas CLI: geram desconhecido e evidência `entrypoint`/`transitive_entrypoint`, nunca alcançável. O subconjunto transitive_imported_via inclui essas entradas CLI, explicitamente distintas de importações nas notas. Scripts dinâmicos, referências npm run/exec/npx não resolvidas e JSON inválido também bloqueiam prova negativa. Ausência de uso continua limitada aos fontes e entradas estáticas modeladas, não ao que alguém pode executar externamente.
+
+Validação de NodeGoat no SHA `c5cb68a7084e4ae7dcc60e6a98768720a81841e8`: 437 achados, 13 alcançáveis em produção, 1 só em testes, 0 inalcançáveis diretos, 11 inalcançáveis transitivos, 407 desconhecidos transitivos via importação/CLI e 5 outros desconhecidos. Async@2.6.1 passou de teste-alcançável para desconhecido porque é transitivo e a resolução da versão citada pelos fontes não foi comprovada. O contexto test_only foi preservado.

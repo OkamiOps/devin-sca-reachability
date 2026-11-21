@@ -1,5 +1,7 @@
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, replace
 import json
+import posixpath
 import re
 from typing import Callable, Iterable
 from urllib.parse import quote
@@ -32,6 +34,13 @@ class LockedComponent:
     ecosystem: str
     purl: str
     manifest_path: str
+    dev: bool = False
+    lock_path: str | None = None
+    dependency_relation: str = "direct"
+    dependency_via: tuple[tuple[str, ...], ...] = ()
+    dependency_graph_complete: bool = True
+    dependency_graph_reason: str | None = None
+    entry_commands: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -61,6 +70,109 @@ def _npm_name_from_lock_path(path: str) -> str | None:
 
 def _npm_purl(name: str, version: str) -> str:
     return f"pkg:npm/{quote(name, safe='/._~-')}@{version}"
+
+
+def _npm_resolve(packages: dict, parent: str, name: str) -> str | None:
+    while True:
+        if posixpath.basename(parent) != "node_modules":
+            candidate = f"{parent}/node_modules/{name}" if parent else f"node_modules/{name}"
+            if candidate in packages:
+                return candidate
+        if not parent:
+            return None
+        ancestor = posixpath.dirname(parent)
+        if ancestor == parent:
+            return None
+        parent = ancestor
+
+
+def _npm_graph(packages: dict, components: list[LockedComponent]) -> list[LockedComponent]:
+    issues = []
+
+    def issue(message: str) -> None:
+        if len(issues) < 3:
+            issues.append(message[:400])
+
+    def dependencies(package: dict, *, root: bool = False) -> set[str]:
+        names = set()
+        fields = ("dependencies", "optionalDependencies", "peerDependencies")
+        for field in fields + (("devDependencies",) if root else ()):
+            values = package.get(field, {})
+            if not isinstance(values, dict):
+                issue(f"mapa {field} inválido")
+                continue
+            for name, version in values.items():
+                if not NPM_NAME_RE.fullmatch(name) or not isinstance(version, str):
+                    issue(f"entrada {field} inválida")
+                    continue
+                names.add(name)
+        return names
+
+    root = packages.get("")
+    if not isinstance(root, dict):
+        issue("metadados da raiz ausentes")
+        root = {}
+    declared = dependencies(root, root=True)
+    direct = {name: _npm_resolve(packages, "", name) for name in sorted(declared)}
+    for name, path in direct.items():
+        if path is None:
+            issue(f"dependência direta {name} não resolvida")
+    nodes = {component.lock_path: component for component in components}
+    if any(path.startswith("/") or "\\" in path or any(part in {"", ".", ".."} for part in path.split("/"))
+           for path in nodes):
+        issue("caminho não canônico no lockfile")
+    if set(packages) - {""} != set(nodes):
+        issue("entradas não analisadas ou não suportadas no lockfile")
+    edges = {}
+    edge_count = 0
+    if len(nodes) <= MAX_COMPONENTS:
+        for path in nodes:
+            edges[path] = []
+            for name in sorted(dependencies(packages[path])):
+                target = _npm_resolve(packages, path, name)
+                if target not in nodes:
+                    issue(f"{name} de {path} não resolvida")
+                else:
+                    edges[path].append(target)
+                edge_count += 1
+                if edge_count > 50_000:
+                    issue("limite de arestas do grafo excedido")
+                    break
+            if edge_count > 50_000:
+                break
+    else:
+        issue("limite de nós do grafo excedido")
+    chains = {path: [] for path in nodes}
+    visits = 0
+    for name, start in direct.items():
+        if start not in nodes:
+            issue(f"dependência direta {name} não analisada")
+            continue
+        queue = deque([(start, (name,))])
+        seen = {start}
+        while queue:
+            path, chain = queue.popleft()
+            chains[path].append(chain)
+            visits += 1
+            if visits > 50_000 or len(chain) > 32:
+                issue("limite de caminhos do grafo excedido")
+                queue.clear()
+                break
+            for target in edges.get(path, ()):
+                if target not in seen:
+                    seen.add(target)
+                    queue.append((target, chain + (nodes[target].name,)))
+        if visits > 50_000:
+            break
+    direct_paths = set(direct.values()) - {None}
+    reason = "Grafo npm incompleto: " + "; ".join(issues) + "." if issues else None
+    return [replace(component,
+                    dependency_relation="direct" if component.lock_path in direct_paths else "transitive",
+                    dependency_via=tuple(chains[component.lock_path]),
+                    dependency_graph_complete=not issues and bool(chains[component.lock_path]),
+                    dependency_graph_reason=reason or (None if chains[component.lock_path] else
+                        "Grafo npm incompleto: pacote sem caminho a partir das dependências diretas."))
+            for component in components]
 
 
 def _parse_package_lock(
@@ -103,9 +215,15 @@ def _parse_package_lock(
                 ecosystem="npm",
                 purl=_npm_purl(name, version),
                 manifest_path=manifest_path,
+                dev=package.get("dev") is True,
+                lock_path=lock_path,
+                entry_commands=tuple(name for name in (
+                    package.get("bin", {}).keys() if isinstance(package.get("bin"), dict)
+                    else [name.rsplit("/", 1)[-1]] if isinstance(package.get("bin"), str) else []
+                ) if re.fullmatch(r"[A-Za-z0-9._-]{1,214}", name)),
             )
         )
-    return components, warnings
+    return _npm_graph(packages, components), warnings
 
 
 def _parse_requirements(

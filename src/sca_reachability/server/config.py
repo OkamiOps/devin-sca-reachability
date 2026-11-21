@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import os
+import re
 from pathlib import Path
 from typing import Mapping
 
@@ -22,8 +23,15 @@ class Settings:
     ai_api_key: str | None
     ai_model: str | None
     allow_loopback_origins: bool = False
+    public_repositories: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if len(self.public_repositories) > 10 or any(
+            not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}", name)
+            or name.split('/')[1] in {'.', '..'}
+            for name in self.public_repositories
+        ):
+            raise ValueError("SCA_PUBLIC_REPOSITORIES requires at most 10 owner/name entries")
         if self.allow_loopback_origins and self.mode != "demo":
             raise ValueError("SCA_ALLOW_LOOPBACK_ORIGINS requires SCA_MODE=demo")
 
@@ -31,8 +39,8 @@ class Settings:
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
         values = os.environ if environ is None else environ
         mode = values.get("SCA_MODE", "live").strip().lower()
-        if mode not in {"live", "demo"}:
-            raise ValueError("SCA_MODE must be 'live' or 'demo'")
+        if mode not in {"live", "demo", "public"}:
+            raise ValueError("SCA_MODE must be 'live', 'demo' or 'public'")
         allow_loopback = values.get("SCA_ALLOW_LOOPBACK_ORIGINS", "0").strip()
         if allow_loopback not in {"0", "1"}:
             raise ValueError("SCA_ALLOW_LOOPBACK_ORIGINS must be '0' or '1'")
@@ -76,6 +84,7 @@ class Settings:
             ai_api_key=values.get("SCA_AI_API_KEY"),
             ai_model=values.get("SCA_AI_MODEL"),
             allow_loopback_origins=allow_loopback == "1",
+            public_repositories=tuple(dict.fromkeys(name.strip().lower() for name in values.get("SCA_PUBLIC_REPOSITORIES", "").split(",") if name.strip())),
         )
 
     @property
@@ -88,12 +97,16 @@ class Settings:
 
     @property
     def webhook_secret(self) -> str | None:
+        if self.mode == "public":
+            return None
         if self.mode == "demo":
             return DEMO_WEBHOOK_SECRET
         return self.github_webhook_secret or None
 
     @property
     def github_configured(self) -> bool:
+        if self.mode == "public":
+            return bool(self.public_repositories)
         if self.mode == "demo":
             return True
         return bool(

@@ -17,6 +17,7 @@ from sca_reachability.server.db import Database, iso_now
 from sca_reachability.server.demo import DEMO_REPOSITORY, seed_demo_catalog, seed_initial_scan
 from sca_reachability.server.errors import ServiceError
 from sca_reachability.server.github import DemoGitHubAdapter, GitHubAppClient, SHA_RE
+from sca_reachability.server.public_github import PublicGitHubAdapter
 from sca_reachability.server.osv_client import DemoOsvAdapter, OsvClient
 from sca_reachability.server.security import (
     SESSION_COOKIE,
@@ -72,7 +73,8 @@ def create_app(
     database = Database(settings.database_path)
     github_configured = github_adapter is not None or settings.github_configured
     github = github_adapter or (
-        DemoGitHubAdapter() if settings.mode == "demo" else GitHubAppClient(settings)
+        DemoGitHubAdapter() if settings.mode == "demo" else
+        PublicGitHubAdapter(settings.public_repositories) if settings.mode == "public" else GitHubAppClient(settings)
     )
     osv = osv_adapter or (DemoOsvAdapter() if settings.mode == "demo" else OsvClient())
 
@@ -189,7 +191,7 @@ def create_app(
     def meta():
         return {
             "mode": settings.mode,
-            "github_configured": bool(github_configured) if settings.mode == "live" else False,
+            "github_configured": bool(github_configured) if settings.mode != "demo" else False,
             "ai_configured": bool(app.state.ai_configured) if settings.mode == "live" else False,
             "auth_required": True,
         }
@@ -212,7 +214,7 @@ def create_app(
         response = JSONResponse({"authenticated": True})
         response.set_cookie(
             SESSION_COOKIE, session, max_age=SESSION_TTL_SECONDS,
-            httponly=True, secure=settings.mode == "live", samesite="strict", path="/api",
+            httponly=True, secure=settings.mode != "demo", samesite="strict", path="/api",
         )
         return response
 
@@ -222,7 +224,7 @@ def create_app(
         response = Response(status_code=204)
         response.delete_cookie(
             SESSION_COOKIE, path="/api", httponly=True,
-            secure=settings.mode == "live", samesite="strict",
+            secure=settings.mode != "demo", samesite="strict",
         )
         return response
 
@@ -370,7 +372,9 @@ def create_app(
             ).fetchall()
             results = [
                 {**{key: row[key] for key in SCAN_FIELDS}, "advisory_ids": [], "package_names": [],
-                 "reachability_counts": {"reachable": 0, "unreachable": 0, "unknown": 0}}
+                 "reachability_counts": {"reachable": 0, "unreachable": 0, "unknown": 0},
+                 "transitive_imported_unknown_count": 0,
+                 "reachability_scope_counts": {"production": 0, "test_only": 0, "dev_tooling": 0, "unreported": 0}}
                 for row in rows
             ]
             if results:
@@ -386,6 +390,17 @@ def create_app(
                     WHERE scan_id IN ({placeholders}) GROUP BY scan_id, reachability""", list(by_id),
                 ):
                     by_id[item["scan_id"]]["reachability_counts"][item["reachability"]] = item["total"]
+                for item in connection.execute(
+                    f"""SELECT scan_id, reachability, reachability_analysis_json FROM scan_findings
+                    WHERE scan_id IN ({placeholders})""", list(by_id),
+                ):
+                    analysis = json.loads(item["reachability_analysis_json"])
+                    if item["reachability"] == "reachable":
+                        scope = analysis.get("scope")
+                        key = scope if scope in {"production", "test_only", "dev_tooling"} else "unreported"
+                        by_id[item["scan_id"]]["reachability_scope_counts"][key] += 1
+                    elif item["reachability"] == "unknown" and analysis.get("transitive_imported_via") is True:
+                        by_id[item["scan_id"]]["transitive_imported_unknown_count"] += 1
                 for item in connection.execute(
                     f"""SELECT DISTINCT scan_id, name FROM scan_components
                     WHERE scan_id IN ({placeholders}) ORDER BY name""", list(by_id),
@@ -427,6 +442,9 @@ def create_app(
                 finding["reachability_analysis"] = json.loads(
                     finding.pop("reachability_analysis_json") or "{}"
                 )
+                finding["reachability_scope"] = finding["reachability_analysis"].get("scope")
+                finding["dependency_relation"] = finding["reachability_analysis"].get("dependency_relation")
+                finding["dependency_via"] = finding["reachability_analysis"].get("dependency_via", [])
                 findings.append(finding)
             result["findings"] = findings
             result["warnings"] = [item["warning"] for item in connection.execute(
@@ -554,6 +572,8 @@ def create_app(
 
     @app.post("/api/webhooks/github")
     async def github_webhook(request: Request):
+        if settings.mode == "public":
+            raise HTTPException(404, "Not found")
         result = processor.ingest(
             delivery_id=request.headers.get("x-github-delivery", ""),
             event=request.headers.get("x-github-event", ""),

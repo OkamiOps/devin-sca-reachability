@@ -1,4 +1,4 @@
-import { escapeHTML as e, formatDate, count, scanLabel, reachabilityLabel, isDirty, scopedRepositoryPath, explanationPresentation, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts } from "/model.js";
+import { escapeHTML as e, formatDate, count, scanLabel, reachabilityLabel, isDirty, scopedRepositoryPath, explanationPresentation, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts, supportedMode, githubLink, advisoryURL, findingPage, findingPresentation, scopeCounts, scopeSummary, dependencyPresentation, isTransitiveUnknown } from "/model.js";
 
 const $ = selector => document.querySelector(selector);
 const state = {
@@ -9,6 +9,7 @@ const state = {
   lastUpdated: null, timer: null, noticeTimer: null, detailTimer: null,
   selectionError: "", saveError: "", branchRefreshError: "", connectionNotice: false,
   simulationScope: null, simulationTarget: null, detailReturn: null,
+  reportScan: null, findingFilter: "all", findingPage: 0,
 };
 const MAX_BRANCHES = 20;
 class ApiError extends Error {
@@ -70,8 +71,10 @@ function reachSentence(scan) {
   const counts = scan.reachability_counts;
   if (!counts) return "Alcance não informado; trate como desconhecido.";
   const parts = [["reachable", "alcançável", "alcançáveis"], ["unknown", "desconhecido", "desconhecidos"], ["unreachable", "inalcançável", "inalcançáveis"]]
-    .filter(([key]) => counts[key] > 0)
+    .filter(([key]) => counts[key] > 0 && !(key === "reachable" && scan.reachability_scope_counts))
     .map(([key, one, many]) => `${counts[key]} ${counts[key] === 1 ? one : many}`);
+  if (scan.reachability_scope_counts) parts.unshift(scopeSummary(scan.reachability_scope_counts));
+  if (scan.transitive_imported_unknown_count) parts.push(`${scan.transitive_imported_unknown_count} desses desconhecidos são transitivos via importações/CLI`);
   return parts.length ? `Alcance estático: ${parts.join(" · ")}.` : "Alcance não informado; trate como desconhecido.";
 }
 
@@ -80,6 +83,12 @@ function items(response) {
   return response.items;
 }
 function demo() { return state.meta?.mode === "demo"; }
+function publicMode() { return state.meta?.mode === "public"; }
+function commitMarkup(scan) {
+  const url = githubLink(scan);
+  const label = `Commit ${scan.commit_sha?.slice(0, 7) || "não informado"}`;
+  return url ? `<a class="commit-link mono" href="${e(url)}" target="_blank" rel="noopener noreferrer">${e(label)} ↗</a>` : e(label);
+}
 function repo() { return state.repositories.find(value => String(value.id) === String(state.repository)); }
 function repositoryPath() { return scopedRepositoryPath(state.installation, state.repository); }
 function badge(text, kind = "muted", dot = false) {
@@ -145,10 +154,10 @@ function pageHeading(number, title, description, aside = "") {
 }
 function renderEnvironment() {
   if (!state.meta) return;
-  $("#mode").outerHTML = `<span id="mode" class="badge ${demo() ? "demo" : "live"}"><span class="dot" aria-hidden="true"></span>${demo() ? "Demonstração · dados fictícios" : "Ambiente real"}</span>`;
+  $("#mode").outerHTML = `<span id="mode" class="badge ${demo() ? "demo" : "live"}"><span class="dot" aria-hidden="true"></span>${demo() ? "Demonstração · dados fictícios" : publicMode() ? "GitHub público · somente leitura, sem credenciais" : "Ambiente real"}</span>`;
   const node = $("#environment-notice");
-  node.hidden = !demo();
-  node.innerHTML = '<strong>Ambiente de demonstração</strong><span>Dados sintéticos. Sem conexão com GitHub, OSV ou IA reais.</span>';
+  node.hidden = !demo() && !publicMode();
+  node.innerHTML = publicMode() ? '<strong>GitHub público + OSV real</strong><span>Somente leitura · análise estática no commit · nenhum código executado.</span>' : '<strong>Ambiente de demonstração</strong><span>Dados sintéticos. Sem conexão com GitHub, OSV ou IA reais.</span>';
   $("#navigation").hidden = !state.authenticated;
   $("#logout").hidden = !state.authenticated;
   $(".app-shell").classList.toggle("guest", !state.authenticated);
@@ -161,8 +170,8 @@ function renderLogin(message = "") {
       <div class="login-diagram" aria-label="Fluxo do produto: GitHub, branches, dependências, evidências"><span class="diagram-node">GitHub <small>origem do código</small></span><span class="diagram-connector" aria-hidden="true"></span><div class="diagram-branches"><span>main</span><span>release</span><span>develop</span></div><span class="diagram-connector" aria-hidden="true"></span><span class="diagram-node diagram-result">Dependências → Evidências</span><p>Fluxo ilustrativo · não representa uma conexão ativa</p></div>
       <div class="login-principle"><span aria-hidden="true">◇</span><p>Presença não prova execução.<br><strong>Desconhecido nunca vira seguro.</strong></p></div>
     </div>
-    <form id="login-form" class="panel login-form" novalidate><div class="login-mark" aria-hidden="true">↗</div><span class="eyebrow">SEU WORKSPACE DE SEGURANÇA</span><h2>${demo() ? "Conheça o fluxo completo." : "Bem-vindo ao workspace."}</h2><p>${demo() ? "Explore da seleção de branches até a revisão de um achado, sem conectar uma conta." : "Acesse o monitoramento de dependências da sua instalação GitHub."}</p>
-      ${demo() ? '<div class="demo-access">' + button("Entrar na demonstração →", "demo-login", "primary") + '<span>Ambiente isolado · somente dados fictícios</span></div><div class="login-divider"><span class="demo-token">Use o token <code>local-demo</code></span></div>' : '<p>Use o token configurado pelo operador. Não é um token pessoal do GitHub.</p>'}
+    <form id="login-form" class="panel login-form" novalidate><div class="login-mark" aria-hidden="true">↗</div><span class="eyebrow">SEU WORKSPACE DE SEGURANÇA</span><h2>${demo() ? "Conheça o fluxo completo." : "Bem-vindo ao workspace."}</h2><p>${demo() ? "Explore da seleção de branches até a revisão de um achado, sem conectar uma conta." : publicMode() ? "Repositórios públicos, avisos reais e evidência no código. Sem credenciais do GitHub." : "Acesse o monitoramento de dependências da sua instalação GitHub."}</p>
+      ${demo() ? '<div class="demo-access">' + button("Entrar na demonstração →", "demo-login", "primary") + '<span>Ambiente isolado · somente dados fictícios</span></div><div class="login-divider"><span class="demo-token">Use o token <code>local-demo</code></span></div>' : publicMode() ? '<p>Use o token do operador configurado em <code>SCA_DASHBOARD_TOKEN</code>. Não é um token do GitHub.</p>' : '<p>Use o token configurado pelo operador. Não é um token pessoal do GitHub.</p>'}
       <label for="access-token">Token de acesso</label><input id="access-token" name="token" type="password" required autocomplete="off" spellcheck="false" placeholder="Seu token de acesso">
       <p id="login-error" class="form-error" role="alert" ${message ? "" : "hidden"}>${e(message)}</p>
       <button class="primary" type="submit">Acessar painel <span aria-hidden="true">→</span></button>
@@ -177,6 +186,7 @@ function endSession() {
   clearTimeout(state.timer);
   state.dashboard = null; state.installations = []; state.repositories = []; state.branches = [];
   state.scans = []; state.deliveries = []; state.selected = new Set();
+  state.reportScan = null;
   state.installation = null; state.repository = null;
   $("#detail-dialog").close(); $("#detail-content").replaceChildren();
   renderLogin("Sua sessão foi encerrada. Entre novamente para continuar.");
@@ -187,9 +197,10 @@ function stat(label, value, caption, accent = false) {
   return `<div class="stat${accent ? " stat-accent" : ""}"><span class="stat-label">${e(label)}</span><div class="stat-main"><span class="stat-value${accent ? " accent" : ""}">${count(value)}</span><span class="stat-symbol" aria-hidden="true">${accent ? "◇" : "↗"}</span></div><small>${e(caption)}</small></div>`;
 }
 function scanTable(scans) {
-  if (!scans.length) return empty("Nenhuma análise por aqui, ainda.", "Selecione as branches que deseja monitorar. As análises aparecerão aqui após um envio de código ou uma execução manual.", '<a href="#branches" class="button">Selecionar branches <span aria-hidden="true">→</span></a>');
+  if (publicMode()) scans = scans.map(scan => ({ ...scan, advisory_ids: Array.isArray(scan.advisory_ids) && scan.advisory_ids.length > 3 ? [...scan.advisory_ids.slice(0, 3), `+${scan.advisory_ids.length - 3} avisos no relatório`] : scan.advisory_ids }));
+  if (!scans.length) return empty("Nenhuma análise por aqui, ainda.", publicMode() ? "Selecione e salve uma branch, depois use Analisar para consultar o commit público e o OSV." : "Selecione as branches que deseja monitorar. As análises aparecerão aqui após um envio de código ou uma execução manual.", '<a href="#branches" class="button">Selecionar branches <span aria-hidden="true">→</span></a>');
   return `<div class="table-wrap responsive-table"><table role="table"><caption class="sr-only">${demo() ? "Análises sintéticas" : "Análises recebidas do serviço"}</caption><thead><tr><th scope="col">Repositório / branch</th><th scope="col">Estado</th><th scope="col">Achados</th><th scope="col">Atualização</th><th scope="col">Relatório</th></tr></thead><tbody>${scans.map(scan => `<tr>
-    <td data-label="Repositório / branch"><strong class="break">${e(scan.repository)}</strong><span class="secondary mono">↳ ${e(scan.branch)} <span aria-hidden="true">·</span> ${e(scan.commit_sha?.slice(0, 7) || "sem commit")}</span>${scan.source === "demo" ? badge("Sintético", "demo") : scan.source === "github" ? "" : badge("Origem não informada")}</td>
+    <td data-label="Repositório / branch"><strong class="break">${e(scan.repository)}</strong><span class="secondary mono">↳ ${e(scan.branch)} <span aria-hidden="true">·</span> ${e(scan.commit_sha?.slice(0, 7) || "sem commit")}</span>${scan.source === "demo" ? badge("Sintético", "demo") : scan.source === "github" ? publicMode() ? badge("Origem: GitHub público", "live") + commitMarkup(scan) : "" : badge("Origem não informada")}</td>
     <td data-label="Estado">${badge(scanLabel(scan.status), scan.status, true)}</td><td data-label="Achados"><span class="finding-count ${scan.finding_count > 0 ? "has-findings" : ""}">${scan.status === "completed" ? count(scan.finding_count) : "—"}</span>${scan.status === "completed" && scan.finding_count > 0 && scan.reachability_counts ? `<span class="reach-mini">${["reachable", "unknown", "unreachable"].filter(key => scan.reachability_counts[key] > 0).map(key => `<span class="${key}"><i aria-hidden="true"></i>${count(scan.reachability_counts[key])} ${e(reachabilityPresentation(key).label.toLowerCase())}</span>`).join("")}</span>` : ""}${Array.isArray(scan.advisory_ids) ? scan.advisory_ids.map(id => `<span class="secondary mono">${e(id)}</span>`).join("") : ""}</td>
     <td data-label="Atualização" class="secondary">${e(formatDate(scan.completed_at || scan.created_at))}</td><td data-label="Relatório">${button("Ver análise →", "detail", "text-button", false, `data-id="${e(scan.id)}" aria-label="Ver análise de ${e(scan.repository)}, branch ${e(scan.branch)}"`)}</td>
   </tr>`).join("")}</tbody></table></div>`;
@@ -201,11 +212,11 @@ function overview() {
   return `${pageHeading("01", 'Visão geral', "Dependências, branches e evidências. Um lugar para decidir o próximo passo.", button("Atualizar painel", "refresh", "", state.busy))}
     <div class="section-kicker"><span>VISÃO DO AMBIENTE</span><span>Todas as instalações autorizadas</span></div>
     <div class="stats">${stat("Repositórios", data.repositories, "disponíveis no ambiente")}${stat("Branches monitoradas", data.selected_branches, "seleções salvas")}${stat("Análises registradas", data.scans, demo() ? "execuções sintéticas · histórico" : "execuções do serviço · histórico")}${stat("Achados atuais", data.findings, "última análise concluída por branch", true)}</div>
-    <div class="toolbar scope-toolbar"><div class="actions">${scopeControls()}</div><a href="#branches" class="button">Gerenciar monitoramento ↗</a></div>
-    ${scopeEmpty() || `<section class="attention-card"><div class="attention-icon" aria-hidden="true">${latest?.finding_count ? "◇" : "↗"}</div><div><span class="eyebrow">PRÓXIMO PASSO · REPOSITÓRIO SELECIONADO</span><h2>${!monitored ? "Escolha suas primeiras branches." : latest ? latest.finding_count ? `${count(latest.finding_count)} ${latest.finding_count === 1 ? "achado para revisar" : "achados para revisar"}.` : "Uma análise pronta para sua revisão." : "Tudo pronto para a primeira análise."}</h2><p>${!monitored ? "Salve uma seleção para iniciar o acompanhamento deste repositório." : latest ? `${e(latest.branch)} · última análise concluída. ${e(reachSentence(latest))}` : "Execute uma análise manual ou aguarde um push em uma branch monitorada."}</p></div>${latest && monitored ? button("Revisar última análise →", "detail", "primary", false, `data-id="${e(latest.id)}"`) : '<a href="#branches" class="button primary">Configurar branches →</a>'}</section>`}
+    <div class="toolbar scope-toolbar"><div class="actions">${scopeControls()}</div><div class="actions">${publicMode() && monitored ? button("Analisar agora →", "scan", "primary", state.busy, `data-branch="${e(state.branches.find(b => b.selected).name)}"`) : ""}<a href="#branches" class="button">Gerenciar monitoramento ↗</a></div></div>
+    ${scopeEmpty() || `<section class="attention-card"><div class="attention-icon" aria-hidden="true">${latest?.finding_count ? "◇" : "↗"}</div><div><span class="eyebrow">PRÓXIMO PASSO · REPOSITÓRIO SELECIONADO</span><h2>${!monitored ? "Escolha suas primeiras branches." : latest ? latest.finding_count ? `${count(latest.finding_count)} ${latest.finding_count === 1 ? "achado para revisar" : "achados para revisar"}.` : "Uma análise pronta para sua revisão." : "Tudo pronto para a primeira análise."}</h2><p>${!monitored ? "Salve uma seleção para iniciar o acompanhamento deste repositório." : latest ? `${e(latest.branch)} · última análise concluída. ${e(reachSentence(latest))}` : publicMode() ? "Use Analisar agora ou escolha uma branch em Monitoramento. Nenhum webhook é necessário." : "Execute uma análise manual ou aguarde um push em uma branch monitorada."}</p></div>${latest && monitored ? button("Revisar última análise →", "detail", "primary", false, `data-id="${e(latest.id)}"`) : '<a href="#branches" class="button primary">Configurar branches →</a>'}</section>`}
     <div class="workflow-strip"><a href="#branches"><span>01</span><div><strong>Escolha as branches</strong><small>Defina o que acompanhar</small></div><b aria-hidden="true">→</b></a><a href="#results"><span>02</span><div><strong>Acompanhe análises</strong><small>Do commit ao resultado</small></div><b aria-hidden="true">→</b></a><a href="#activity"><span>03</span><div><strong>Confira a origem</strong><small>Eventos e execuções vinculados</small></div><b aria-hidden="true">↗</b></a></div>
     <div class="overview-grid"><section class="panel"><div class="section-heading panel-heading"><div><span class="eyebrow">REPOSITÓRIO SELECIONADO</span><h2>Análises recentes</h2></div><a href="#results" class="text-button">Ver todas →</a></div>${scanTable(state.scans.slice(0, 5))}</section>
-    <aside class="panel panel-body"><span class="eyebrow">CONEXÕES DO AMBIENTE</span><div class="connection"><div class="inline"><h3>GitHub App</h3>${badge(demo() ? "Simulado" : state.meta.github_configured ? "Configurado" : "Não configurado", !demo() && state.meta.github_configured ? "live" : "muted")}</div><p>${demo() ? "Instalação e eventos simulados. Não há conexão real nesta demonstração." : state.meta.github_configured ? "A configuração está presente. A atividade abaixo confirma os eventos recebidos, não a saúde contínua da conexão." : "O operador precisa configurar o GitHub App no serviço para receber repositórios e eventos."}</p></div>
+    <aside class="panel panel-body"><span class="eyebrow">CONEXÕES DO AMBIENTE</span><div class="connection"><div class="inline"><h3>${publicMode() ? "GitHub público" : "GitHub App"}</h3>${badge(demo() ? "Simulado" : state.meta.github_configured ? "Configurado" : "Não configurado", !demo() && state.meta.github_configured ? "live" : "muted")}</div><p>${demo() ? "Instalação e eventos simulados. Não há conexão real nesta demonstração." : publicMode() ? "Sem GitHub App ou credenciais. Snapshots em memória e avisos reais do OSV. Inicie análises manualmente; webhooks desabilitados." : state.meta.github_configured ? "A configuração está presente. A atividade abaixo confirma os eventos recebidos, não a saúde contínua da conexão." : "O operador precisa configurar o GitHub App no serviço para receber repositórios e eventos."}</p></div>
     <div class="connection"><div class="inline"><h3>Explicações por IA</h3>${badge(state.meta.ai_configured ? "Configurada" : "Desabilitadas", state.meta.ai_configured ? "live" : "muted")}</div><p>Quando disponíveis, ajudam na leitura. Não substituem evidência nem determinam o alcance.</p></div>
     <div class="connection"><span class="eyebrow">ÚLTIMA ANÁLISE</span><p>${e(formatDate(data.last_scan_at))}</p></div></aside></div>
     <div class="trust-note"><span aria-hidden="true">◇</span><p><strong>Evidência, não promessa de segurança.</strong> Sem achados não significa ausência de vulnerabilidades. Alcance desconhecido permanece desconhecido.</p></div>`;
@@ -217,7 +228,7 @@ function scopeControls(includeRepository = true) {
 }
 function scopeEmpty() {
   const sync = !demo() && state.meta.github_configured ? button("Sincronizar com GitHub", "sync", "primary", state.busy) : "";
-  if (!state.installation) return empty("Nenhuma instalação ativa.", demo() ? "A instalação de demonstração ainda não está disponível. Atualize o painel para tentar novamente." : "Configure e instale o GitHub App para que os repositórios autorizados apareçam aqui. Instalações suspensas não permitem monitoramento.", sync);
+  if (!state.installation) return empty("Nenhuma instalação ativa.", demo() ? "A instalação de demonstração ainda não está disponível. Atualize o painel para tentar novamente." : publicMode() ? "Configure SCA_PUBLIC_REPOSITORIES no serviço e sincronize para listar os repositórios públicos. Não é necessário GitHub App." : "Configure e instale o GitHub App para que os repositórios autorizados apareçam aqui. Instalações suspensas não permitem monitoramento.", sync);
   if (!state.repository) return empty("Nenhum repositório disponível.", "Autorize repositórios nesta instalação do GitHub App e sincronize a lista.", sync);
   return "";
 }
@@ -256,15 +267,15 @@ function simulationControls() {
 }
 function branches() {
   const dirty = isDirty(state.branches, state.selected);
-  return `${pageHeading("02", 'Monitoramento', "Você define o escopo. Cada push em uma branch salva pode iniciar uma análise.")}
+  return `${pageHeading("02", 'Monitoramento', publicMode() ? "Selecione e salve as branches. Use Analisar para consultar GitHub e OSV reais, sem executar código." : "Você define o escopo. Cada push em uma branch salva pode iniciar uma análise.")}
     <div class="toolbar scope-toolbar"><div class="actions">${scopeControls()}</div><div class="actions">${!demo() && state.meta.github_configured ? button("Sincronizar com GitHub", "sync", "", state.busy) : ""}<div class="branch-refresh-action">${button("Atualizar lista", "refresh", "", state.busy)}<span id="branch-refresh-error" class="form-error" role="alert">${e(state.branchRefreshError)}</span></div></div></div>
     ${scopeEmpty() || `${demo() ? `<section class="execution-dock"><div><span class="eyebrow">TESTE O FLUXO</span><h3>Simule um push, veja o resultado.</h3><p>Primeiro selecione e salve uma branch. Depois envie um evento sintético.</p></div><div id="simulation-controls">${simulationControls()}</div></section>` : ""}<div class="branch-layout"><section><div class="section-heading"><div><span class="eyebrow">01 / ESCOLHA E SALVE</span><h2>Branches de ${e(repo()?.full_name?.split("/").pop() || "repositório")}</h2></div>${badge(`${state.branches.length} disponíveis`)}</div>
       <label class="field" for="branch-search">Buscar branch<input id="branch-search" type="search" placeholder="Filtrar pelo nome…" value="${e(state.filter)}" autocomplete="off"></label>
       <div class="actions bulk-actions">${button("Selecionar filtradas", "select-filtered", "quiet", state.busy)}${button("Limpar seleção", "clear-selection", "quiet", state.busy || !state.selected.size)}<span class="secondary small">Até 20 branches por repositório</span></div>
       <div class="save-bar"><p id="selection-summary" aria-live="polite" tabindex="-1">${selectionSummary()}</p><div class="actions">${button("Descartar", "discard", "quiet", !dirty || state.busy)}${button(state.operation === "save" ? "Salvando…" : "Salvar seleção", "save", "primary", !dirty || state.busy || state.selected.size > MAX_BRANCHES)}</div><p id="selection-error" class="form-error" role="status">${e(selectionMessage())}</p><p id="save-error" class="form-error" role="alert" tabindex="-1">${e(state.saveError)}</p></div>
       <div id="branch-list" class="branch-list">${branchRows()}</div>
-      <p class="secondary small spaced">Desmarcar todas pausa novas análises por webhook neste repositório. O histórico é preservado.</p></section>
-      <aside class="panel panel-body"><span class="eyebrow">DO ESCOPO À EVIDÊNCIA</span><div class="flow"><span class="flow-number">01</span><div><h3>Selecione e salve</h3><p>Só a seleção salva é usada pelo serviço. Limpar seleção também desmarca branches ocultas pelo filtro.</p></div></div><div class="flow"><span class="flow-number">02</span><div><h3>Inicie uma análise</h3><p>Use Analisar para uma execução manual${demo() ? " ou simule um push acima" : " ou envie um push pelo GitHub"}.</p></div></div><div class="flow"><span class="flow-number">03</span><div><h3>Decida com contexto</h3><p>Revise pacote, versão, aviso e manifesto. A IA, quando disponível, não é evidência.</p><a href="#results" class="text-button">Abrir análises →</a></div></div></aside></div>`}`;
+      <p class="secondary small spaced">${publicMode() ? "Desmarcar todas pausa novas análises manuais." : "Desmarcar todas pausa novas análises por webhook neste repositório."} O histórico é preservado.</p></section>
+      <aside class="panel panel-body"><span class="eyebrow">DO ESCOPO À EVIDÊNCIA</span><div class="flow"><span class="flow-number">01</span><div><h3>Selecione e salve</h3><p>Só a seleção salva é usada pelo serviço. Limpar seleção também desmarca branches ocultas pelo filtro.</p></div></div><div class="flow"><span class="flow-number">02</span><div><h3>Inicie uma análise</h3><p>Use Analisar para uma execução manual${demo() ? " ou simule um push acima" : publicMode() ? "; webhooks estão desabilitados" : " ou envie um push pelo GitHub"}.</p></div></div><div class="flow"><span class="flow-number">03</span><div><h3>Decida com contexto</h3><p>Revise pacote, versão, aviso e manifesto. A IA, quando disponível, não é evidência.</p><a href="#results" class="text-button">Abrir análises →</a></div></div></aside></div>`}`;
 }
 
 function matchingScans() {
@@ -284,6 +295,7 @@ function results() {
     <p class="secondary small spaced"><span id="last-updated">${state.lastUpdated ? `Última atualização do painel: ${e(formatDate(state.lastUpdated))}.` : ""}</span> Atualização automática a cada 15 segundos; filtros e seleções em edição são preservados.</p>`;
 }
 function activity() {
+  if (publicMode()) return `${pageHeading("04", "Atividade", "Execuções manuais sobre commits públicos. Este ambiente não recebe webhooks.", button("Atualizar", "refresh", "", state.busy))}<section class="panel panel-body"><span class="eyebrow">ORIGEM AUDITÁVEL</span><h2>Do GitHub ao relatório.</h2><p>Consulte o histórico de análises para revisar repositório, branch, commit exato e evidências. Nenhum push é simulado ou recebido neste modo.</p><a href="#results" class="button primary">Ver análises →</a></section>`;
   return `${pageHeading("04", 'Atividade', "A origem de cada execução. Confira o evento recebido e a análise que ele iniciou.", `<div class="actions">${button("Atualizar", "refresh", "", state.busy)}</div>`)}
     ${state.deliveries.length ? `<div class="table-wrap responsive-table"><table role="table"><thead><tr><th scope="col">Evento</th><th scope="col">Repositório / branch</th><th scope="col">Resultado do evento / análise atual</th><th scope="col">Recebido em</th></tr></thead><tbody>${state.deliveries.map(delivery => `<tr><td data-label="Evento"><strong>${e(delivery.event)}</strong><span class="secondary mono">${e(delivery.delivery_id)}</span></td><td data-label="Repositório / branch"><span class="break">${e(delivery.repository || "—")}</span><span class="secondary mono">${e(delivery.branch || "—")}</span></td><td data-label="Resultado do evento / análise atual"><div class="activity-status-group"><span class="eyebrow">O que o evento fez</span>${badge(deliveryLabel(delivery.status), delivery.status === "failed" ? "failed" : "muted")}</div>${delivery.scan_id ? `<div class="activity-status-group"><span class="eyebrow">Análise atual</span><span class="secondary">${e(scanLabel(delivery.scan_status))}</span>${button("Ver análise →", "detail", "text-button", false, `data-id="${e(delivery.scan_id)}"`)}</div>` : ""}</td><td data-label="Recebido em">${e(formatDate(delivery.received_at))}</td></tr>`).join("")}</tbody></table></div>` : empty("Nenhum evento recebido ainda.", demo() ? "Selecione uma branch e use a simulação de push para explorar o fluxo de demonstração." : "Após configurar o webhook do GitHub App, os eventos recebidos aparecerão aqui.")}
     <div class="note spaced">${demo() ? "Eventos sintéticos, gerados no ambiente de demonstração. Nenhum webhook real é representado." : "Um evento recebido não significa uma análise concluída. Consulte o estado da execução em Análises."}</div>`;
@@ -395,16 +407,13 @@ function findingManifests(finding, scan) {
 function advisoryLink(id) {
   if (typeof id !== "string") return "Identificador não informado";
   if (id.startsWith("DEMO-")) return `${e(id)} · fictício`;
-  const valid = /^(?:CVE-\d{4}-\d{4,}|GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}|[A-Z][A-Z0-9]*-\d{4}-[A-Za-z0-9.-]+)$/.test(id);
-  return valid ? `<a href="https://osv.dev/vulnerability/${encodeURIComponent(id)}" target="_blank" rel="noopener noreferrer">${e(id)}</a>` : e(id);
+  const url = advisoryURL(id);
+  return url ? `<a href="${e(url)}" target="_blank" rel="noopener noreferrer">${e(id)}</a>` : e(id);
 }
 function manifestLink(path, scan, line = null) {
   const label = line ? `${path}:${line}` : path;
-  const repository = scan.repository;
-  const validRepository = typeof repository === "string" && /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/.test(repository) && ![".", ".."].includes(repository.split("/")[1]);
-  const parts = path.split("/");
-  if (demo() || scan.source !== "github" || !validRepository || !/^[0-9a-f]{40}$/i.test(scan.commit_sha || "") || parts.some(part => !part || part === "." || part === "..")) return e(label);
-  const url = `https://github.com/${repository.split("/").map(encodeURIComponent).join("/")}/blob/${scan.commit_sha}/${parts.map(encodeURIComponent).join("/")}${line ? `#L${line}` : ""}`;
+  const url = demo() ? null : githubLink(scan, path, line);
+  if (!url) return e(label);
   return `<a href="${e(url)}" target="_blank" rel="noopener noreferrer">${e(label)}</a>`;
 }
 function findingInstructions(finding, scan) {
@@ -412,7 +421,7 @@ function findingInstructions(finding, scan) {
   const version = versions.length ? versions.join(" ou ") : "(sem versão corrigida informada)";
   const manifests = findingManifests(finding, scan).join(", ") || "manifesto não informado";
   const lead = ({
-    reachable: "Prioridade: o código chama o alvo do aviso.",
+    reachable: `Prioridade: ${findingPresentation(finding).label.toLowerCase()}. O código chama o alvo do aviso neste contexto.`,
     unreachable: "Nenhuma chamada encontrada, mas a dependência continua vulnerável.",
   })[finding.reachability] || "Alcance desconhecido: revise manualmente os pontos indicados e trate como potencialmente alcançável.";
   return `${lead} Atualize ${finding.package_name || "o componente"} para ${version} em ${manifests}, teste e execute nova análise.`;
@@ -432,9 +441,11 @@ function findingMarkup(finding, scan) {
   const paths = findingManifests(finding, scan);
   const manifests = paths.length ? paths.map(path => manifestLink(path, scan)).join(", ") : "manifesto não informado";
   const instructions = findingInstructions(finding, scan);
-  const reach = reachabilityPresentation(finding.reachability);
+  const reach = findingPresentation(finding);
   const steps = evidenceSteps(finding.reachability_evidence);
   const analysis = finding.reachability_analysis && typeof finding.reachability_analysis === "object" ? finding.reachability_analysis : {};
+  const notes = evidenceSteps(analysis.notes);
+  const contextNote = `<p class="secondary small dependency-context"><strong>${e(dependencyPresentation(finding))}</strong>${isTransitiveUnknown(finding) ? " · Desconhecido: revise os pacotes intermediários, cujo código não foi analisado." : ""}</p>${analysis.dependency_dev ? '<p class="secondary small">Lockfile: dependência de desenvolvimento (<code>dev: true</code>).</p>' : ''}${notes.length ? `<p class="analysis-note small"><strong>Nota de análise · cargas locais</strong><br>${notes.map(note => manifestLink(note.path, scan, note.line)).join(" · ")}<br>Caminhos locais reconhecidos, não cargas de pacotes. Os arquivos locais são analisados dentro da cobertura registrada.</p>` : ''}`;
   const symbols = Array.isArray(analysis.symbols) ? analysis.symbols.filter(symbol => typeof symbol === "string") : [];
   const method = typeof analysis.language === "string" && Number.isInteger(analysis.files_scanned)
     ? `Análise estática de ${e(analysis.language)} em ${count(analysis.files_scanned)} ${analysis.files_scanned === 1 ? "arquivo" : "arquivos"}, ${symbols.length ? `procurando chamadas a <span class="mono">${symbols.map(e).join(", ")}</span>` : "no nível do pacote, porque o aviso não identifica a função vulnerável"}. O código monitorado foi apenas lido, nunca executado.`
@@ -442,10 +453,27 @@ function findingMarkup(finding, scan) {
   const codePath = steps.length
     ? `<ol class="code-path" aria-label="Caminho no código">${steps.map(step => `<li class="step-${step.kind}"><div class="step-head"><span class="step-kind">${e(step.kindLabel)}</span><span class="mono step-location">${manifestLink(step.path, scan, step.line)}</span></div>${step.detail ? `<span class="step-detail mono">${e(step.detail)}</span>` : ""}${step.snippet ? `<pre><code>${e(step.snippet)}</code></pre>` : ""}</li>`).join("")}</ol>`
     : `<p class="secondary">Nenhum trecho de código foi registrado como evidência${finding.reachability === "unreachable" ? ": o pacote não é importado nos arquivos analisados" : ""}.</p>`;
-  return `<article class="finding"><div class="section-heading"><h3>${e(finding.advisory_id || finding.id)}</h3>${badge(reach.label, reach.tone, true)}</div><p><strong>${e(finding.package_name)}</strong> <span class="mono secondary">${e(finding.version)}</span> <span class="secondary">· Severidade: ${severity}</span></p><p class="secondary">${e(finding.summary || "O aviso não inclui um resumo.")}</p>
+  return `<article class="finding"><div class="section-heading"><h3>${publicMode() ? advisoryLink(finding.advisory_id || finding.id) : e(finding.advisory_id || finding.id)}</h3>${badge(reach.label, reach.tone, true)}</div><p><strong>${e(finding.package_name)}</strong> <span class="mono secondary">${e(finding.version)}</span> <span class="secondary">· Severidade: ${severity}</span></p><p class="secondary">${e(finding.summary || "O aviso não inclui um resumo.")}</p>
     <div class="reach-callout ${reach.tone}"><span class="eyebrow">ALCANCE ESTÁTICO · ${e(reach.label.toUpperCase())}</span><strong>${e(reach.headline)}</strong><p>${e(finding.reachability_reason || reach.caveat)}</p>${finding.reachability_reason && !finding.reachability_reason.includes(reach.caveat.split(".")[0]) ? `<p class="small">${e(reach.caveat)}</p>` : ""}</div>
-    <details open><summary>Ver evidências e limites</summary><div class="evidence"><h4>Por que este achado apareceu?</h4><p><span class="mono">${e(finding.package_name)}@${e(finding.version)}</span> encontrado em ${manifests} no commit <span class="mono">${e(scan.commit_sha?.slice(0, 7) || "não informado")}</span>. ${scan.source === "demo" ? "Correlação sintética por versão exata com o aviso fictício; não houve consulta ao OSV." : "Correspondência com o aviso por versão exata via OSV."}</p><h4>Caminho no código</h4><p class="secondary">${method}</p>${codePath}<dl><dt>Identificador</dt><dd class="mono">${advisoryLink(finding.advisory_id || finding.id)}</dd><dt>Componente</dt><dd class="mono">${e(finding.purl || finding.package_name)}</dd><dt>Ecossistema</dt><dd>${e(finding.ecosystem || "Não informado")}</dd><dt>Correção informada</dt><dd>${e(finding.fixed_versions?.length ? finding.fixed_versions.join(", ") : "Nenhuma versão informada nos dados")}</dd><dt>Alcance</dt><dd>${e(reach.label)}. ${e(reach.caveat)}</dd></dl></div></details>
+    ${contextNote}<details open><summary>Ver evidências e limites</summary><div class="evidence"><h4>Por que este achado apareceu?</h4><p><span class="mono">${e(finding.package_name)}@${e(finding.version)}</span> encontrado em ${manifests} no commit <span class="mono">${e(scan.commit_sha?.slice(0, 7) || "não informado")}</span>. ${scan.source === "demo" ? "Correlação sintética por versão exata com o aviso fictício; não houve consulta ao OSV." : "Correspondência com o aviso por versão exata via OSV."}</p><h4>Caminho no código</h4><p class="secondary">${method}</p>${codePath}<dl><dt>Identificador</dt><dd class="mono">${advisoryLink(finding.advisory_id || finding.id)}</dd><dt>Componente</dt><dd class="mono">${e(finding.purl || finding.package_name)}</dd><dt>Ecossistema</dt><dd>${e(finding.ecosystem || "Não informado")}</dd><dt>Correção informada</dt><dd>${e(finding.fixed_versions?.length ? finding.fixed_versions.join(", ") : "Nenhuma versão informada nos dados")}</dd><dt>Alcance</dt><dd>${e(reach.label)}. ${e(reach.caveat)}</dd></dl></div></details>
     <section class="next-step"><h4>Próximo passo</h4><p>${e(instructions)}</p>${button("Copiar instruções", "copy-instructions", "quiet", false, `data-instructions="${e(instructions)}"`)}</section></article>`;
+}
+function renderReportFindings() {
+  const section = $("#report-findings");
+  const scan = state.reportScan;
+  if (!section || !scan || scan.status !== "completed") return;
+  if (!publicMode()) return;
+  const counts = reachabilityCounts(scan.findings);
+  const scopes = scopeCounts(scan.findings);
+  const filters = { all: ["Todos", scan.findings.length], reachable: ["Alcançáveis", counts.reachable], production: ["Em produção", scopes.production], nonproduction: ["Testes/ferramentas", scopes.test_only + scopes.dev_tooling], unknown: ["Desconhecidos", counts.unknown], transitive_unknown: ["Transitivas · import/CLI", scan.findings.filter(isTransitiveUnknown).length], unreachable: ["Inalcançáveis", counts.unreachable] };
+  const page = findingPage(scan.findings, state.findingFilter, state.findingPage);
+  state.findingPage = page.page;
+  section.innerHTML = `<span class="eyebrow">01 / TRIAGEM DOS ACHADOS</span><h3>Priorize com evidências.</h3><p class="secondary">Alcançáveis em produção primeiro. Desconhecido exige revisão — nunca significa seguro.</p><p class="scope-summary">${e(scopeSummary(scopes))}</p>
+    <div class="finding-filters" role="group" aria-label="Filtrar alcance e contexto">${Object.entries(filters).map(([key, [label, total]]) => `<button type="button" data-action="finding-filter" data-filter="${key}" aria-pressed="${state.findingFilter === key}">${e(label)} <span>${count(total)}</span></button>`).join("")}</div>
+    <p class="secondary small" role="status">${page.total ? `${count(page.page * 10 + 1)}–${count(Math.min((page.page + 1) * 10, page.total))} de ${count(page.total)} achados` : "Nenhum achado neste filtro."} · ordem por alcance</p>
+    ${page.items.map(f => findingMarkup(f, scan).replace('<details open>', '<details>')).join("")}
+    <div class="finding-pagination">${button("← Anterior", "finding-prev", "quiet", page.page === 0)}<span class="secondary small">Página ${page.page + 1} de ${page.pages}</span>${button("Próxima →", "finding-next", "quiet", page.page + 1 === page.pages)}</div>`;
+  readableIdentifiers();
 }
 function demoSourceMarkup(scan) {
   if (!demo() || scan.source !== "demo" || scan.status !== "completed") return "";
@@ -466,12 +494,15 @@ async function openDetail(id, polling = false, origin = null) {
   clearTimeout(state.detailTimer);
   const epoch = ++state.detailEpoch;
   const dialog = $("#detail-dialog");
+  dialog.classList.toggle("public-report", publicMode());
   if (!dialog.open) state.detailReturn = origin || detailOrigin();
   if (!polling) $("#detail-content").innerHTML = `<div class="dialog-heading"><h2 id="detail-title">Carregando análise…</h2>${button("Fechar", "close-detail", "quiet")}</div><p class="secondary" role="status">Consultando o relatório e suas evidências.</p>`;
   if (!dialog.open) dialog.showModal();
   try {
     const scan = await api(`/api/scans/${encodeURIComponent(id)}`);
     if (!state.authenticated || !dialog.open || epoch !== state.detailEpoch) return;
+    if (!polling) { state.findingFilter = "all"; state.findingPage = 0; }
+    state.reportScan = scan;
     const explanation = explanationPresentation(scan.explanation);
     const findings = sortFindings(scan.findings);
     const reachCounts = reachabilityCounts(findings);
@@ -479,18 +510,20 @@ async function openDetail(id, polling = false, origin = null) {
     const warnings = Array.isArray(scan.warnings) ? scan.warnings : [];
     const pending = ["queued", "running"].includes(scan.status);
     $("#detail-content").innerHTML = `<div class="dialog-heading"><div><span class="eyebrow">RELATÓRIO DA EXECUÇÃO</span><h2 id="detail-title">${scan.status === "completed" ? findings.length ? `${count(findings.length)} ${findings.length === 1 ? "achado" : "achados"}.` : "Sem achados nos dados." : e(scanLabel(scan.status))}</h2></div>${button("Fechar", "close-detail", "quiet")}</div>
-      <div class="inline">${badge(scanLabel(scan.status), scan.status)}${badge(scan.source === "demo" ? "Demonstração · dados fictícios" : scan.source === "github" ? "Origem: GitHub" : "Origem não informada", scan.source === "demo" ? "demo" : "muted")}</div>
-    <div class="dialog-meta"><span class="break">${e(scan.repository)} <span aria-hidden="true">/</span> ${e(scan.branch)}</span><span class="mono id-chip" title="${e(scan.commit_sha || "não informado")}">Commit ${e(scan.commit_sha || "não informado")}</span><span>${e(formatDate(scan.completed_at || scan.created_at))}</span></div>
+      <div class="inline">${badge(scanLabel(scan.status), scan.status)}${badge(scan.source === "demo" ? "Demonstração · dados fictícios" : scan.source === "github" ? publicMode() ? "Origem: GitHub público" : "Origem: GitHub" : "Origem não informada", scan.source === "demo" ? "demo" : "muted")}</div>
+    <div class="dialog-meta"><span class="break">${e(scan.repository)} <span aria-hidden="true">/</span> ${e(scan.branch)}</span><span class="mono id-chip" title="${e(scan.commit_sha || "não informado")}">${publicMode() ? commitMarkup(scan) : `Commit ${e(scan.commit_sha || "não informado")}`}</span><span>${e(formatDate(scan.completed_at || scan.created_at))}</span></div>
       <nav class="report-nav" aria-label="Seções do relatório"><button type="button" data-action="report-section" data-section="report-findings">Achados <span>${count(findings.length)}</span></button><button type="button" data-action="report-section" data-section="report-explanation">${explanation.ai ? "Leitura por IA" : "Resumo local"}</button><button type="button" data-action="report-section" data-section="report-components">Componentes <span>${count(components.length)}</span></button><button type="button" data-action="report-section" data-section="report-limits">Limites e origem</button></nav>
       ${scan.status === "completed" ? `<div class="report-summary"><div><span>Achados técnicos</span><strong>${count(findings.length)}</strong></div><div><span>Componentes</span><strong>${count(components.length)}</strong></div><div class="reach-summary"><span>Alcance estático</span><div class="reach-counts">${["reachable", "unknown", "unreachable"].map(key => `<b class="reach-count ${key}"><i aria-hidden="true"></i>${count(reachCounts[key])}<small>${e(reachabilityPresentation(key).label)}</small></b>`).join("")}</div></div></div>` : ""}
+      ${scan.status === "completed" ? `<p class="scope-summary">${e(scopeSummary(scopeCounts(findings)))}</p>` : ""}
       <div id="report-limits" class="report-anchor" tabindex="-1">${scan.source === "demo" ? '<p class="note">Este relatório é sintético. Não representa o estado de segurança de um projeto real.</p>' : ""}${demoSourceMarkup(scan)}
       ${scan.status === "failed" ? `<p class="note form-error">A análise falhou e não produziu resultados. Nenhuma conclusão de segurança pode ser extraída.</p><p>Você pode tentar novamente com a mesma branch e o mesmo commit, se a branch continuar monitorada.</p>${button("Tentar novamente", "retry-scan", "quiet", false, `data-id="${e(id)}"`)}<p id="detail-action-error" class="form-error" role="alert"></p>` : ""}
       ${pending ? `<p class="note">Resultados ainda não calculados. Acompanhando automaticamente. ${button("Atualizar agora", "detail", "text-button", false, `data-id="${e(id)}"`)}</p>` : ""}
       ${warnings.length ? `<details class="report-warnings"><summary>Limitações informadas pelo serviço (${warnings.length})</summary><ul>${warnings.map(warning => `<li class="break">${e(warning)}</li>`).join("")}</ul></details>` : ""}</div>
       ${scan.status === "completed" ? `
-      <section id="report-findings" class="spaced report-anchor" tabindex="-1" aria-label="Achados técnicos"><span class="eyebrow">01 / RESULTADO TÉCNICO</span>${findings.length ? findings.map(finding => findingMarkup(finding, scan)).join("") : empty("Nenhum achado disponível.", "Nenhum aviso nos dados analisados. Isso não significa que o projeto está livre de vulnerabilidades.")}</section>
+      <section id="report-findings" class="spaced report-anchor" tabindex="-1" aria-label="Achados técnicos">${publicMode() ? "" : `<span class="eyebrow">01 / RESULTADO TÉCNICO</span>${findings.length ? findings.map(finding => findingMarkup(finding, scan)).join("") : empty("Nenhum achado disponível.", "Nenhum aviso nos dados analisados. Isso não significa que o projeto está livre de vulnerabilidades.")}`}</section>
       <section id="report-explanation" class="explanation report-anchor" tabindex="-1"><span class="eyebrow">02 / APOIO À LEITURA</span><div class="inline"><h3>${e(explanation.title)}</h3>${explanation.ai ? badge("IA · conteúdo não verificado", "unknown") : ""}</div>${explanation.note ? `<p class="secondary small">${e(explanation.note)}</p>` : ""}<p>${e(explanation.text)}</p><p class="secondary small">${explanation.ai ? "Texto gerado por IA, não uma evidência técnica. Pode conter erros. " : ""}A explicação não altera os achados nem comprova se um caminho vulnerável é executado.</p></section>
       <details id="report-components" class="spaced report-anchor" tabindex="-1"><summary>Componentes analisados (${count(components.length)})</summary><div class="table-wrap spaced"><table><thead><tr><th scope="col">Componente</th><th scope="col">Versão</th><th scope="col">Ecossistema / manifesto</th></tr></thead><tbody>${components.map(component => `<tr><td class="break">${e(component.name)}<span class="secondary mono">${e(component.purl)}</span></td><td class="mono">${e(component.version)}</td><td>${e(component.ecosystem)}<span class="secondary mono">${e(component.manifest_path || "—")}</span></td></tr>`).join("")}</tbody></table></div></details>` : ""}<div class="dialog-footer">${button("Fechar relatório", "close-detail", "quiet")}</div>`;
+    renderReportFindings();
     readableIdentifiers();
     $("#detail-announcement").textContent = `Análise: ${scanLabel(scan.status)}.`;
     if (pending) state.detailTimer = setTimeout(() => {
@@ -530,7 +563,7 @@ async function saveBranches() {
     state.branches = items(response);
     state.selected = new Set(state.branches.filter(branch => branch.selected).map(branch => branch.name));
     const repository = repo(); if (repository) repository.selected_branches = [...state.selected];
-    notice(state.selected.size ? "Seleção salva. Novos pushes nessas branches entrarão no monitoramento." : "Monitoramento por webhook pausado neste repositório. O histórico foi preservado.");
+    notice(publicMode() ? "Seleção salva. Use Analisar nas branches selecionadas. O histórico foi preservado." : state.selected.size ? "Seleção salva. Novos pushes nessas branches entrarão no monitoramento." : "Monitoramento por webhook pausado neste repositório. O histórico foi preservado.");
   }, "save");
 }
 async function queueScan(branch, simulate = false) {
@@ -573,6 +606,13 @@ document.addEventListener("click", async event => {
     $("#login-form").requestSubmit();
   }
   else if (action === "refresh") await refresh();
+  else if (["finding-filter", "finding-prev", "finding-next"].includes(action)) {
+    if (action === "finding-filter") { state.findingFilter = target.dataset.filter; state.findingPage = 0; }
+    else state.findingPage += action === "finding-next" ? 1 : -1;
+    renderReportFindings();
+    $("#report-findings").focus({ preventScroll: true });
+    $("#report-findings").scrollIntoView({ block: "start" });
+  }
   else if (action === "sync") {
     if (isDirty(state.branches, state.selected)) { notice("Salve ou descarte suas alterações antes de sincronizar.", true); return; }
     await mutation(async () => {
@@ -698,7 +738,7 @@ async function boot() {
   state.view = readView();
   try {
     state.meta = await api("/api/meta");
-    if (!["demo", "live"].includes(state.meta?.mode)) throw new Error("O serviço não informou um ambiente reconhecido.");
+    if (!supportedMode(state.meta?.mode)) throw new Error("O serviço não informou um ambiente reconhecido.");
     renderEnvironment();
     try {
       state.dashboard = await api("/api/dashboard"); state.authenticated = true;

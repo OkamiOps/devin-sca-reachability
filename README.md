@@ -15,6 +15,8 @@ Open http://127.0.0.1:8000 and sign in with `local-demo` (accepted **only** in e
 
 Live is the default mode and denies installation access until configured. It supports read-only GitHub dependency metadata, branch selections, signed/idempotent webhooks, a durable SQLite worker, exact-version OSV correlation, scoped history, and optional sanitized AI explanations. It never clones or executes repository code or provisions a GitHub App.
 
+For real public repositories without credentials or a GitHub App, set `SCA_MODE=public`, `SCA_PUBLIC_REPOSITORIES=OWASP/NodeGoat` (up to 10 comma-separated `owner/name` entries), `SCA_DASHBOARD_TOKEN` (at least 32 characters), and `SCA_PUBLIC_ORIGIN`. Sync installations, then scan the selected default branch. This mode uses GitHub smart HTTP and bounded, in-memory codeload snapshots (never api.github.com), real OSV, and the existing static analysis pipeline. Webhooks and simulated pushes are disabled; unknown is never safe.
+
 See [backend setup and security boundaries](docs/backend.md), [dashboard behavior](docs/dashboard.md), and [optional AI explanations](docs/ai-explanations.md). This is a single-operator pilot, not multi-tenant SaaS authentication.
 
 ## Current offline demo

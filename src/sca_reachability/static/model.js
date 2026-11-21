@@ -16,6 +16,34 @@ export function count(value) {
   return Number.isFinite(value) && value >= 0 ? new Intl.NumberFormat("pt-BR").format(value) : "—";
 }
 
+export function supportedMode(mode) { return ["demo", "live", "public"].includes(mode); }
+
+export function githubLink(scan, path = null, line = null) {
+  if (scan?.source !== "github" || !/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(scan.repository || "") ||
+      !/^[a-f0-9]{40}$/i.test(scan.commit_sha || "")) return null;
+  const base = `https://github.com/${scan.repository.split('/').map(encodeURIComponent).join('/')}`;
+  if (path === null) return `${base}/commit/${scan.commit_sha}`;
+  if (typeof path !== "string" || /[\\\x00-\x1f]/.test(path) || path.split('/').some(p => !p || p === '.' || p === '..') ||
+      (line !== null && (!Number.isSafeInteger(line) || line < 1))) return null;
+  return `${base}/blob/${scan.commit_sha}/${path.split('/').map(encodeURIComponent).join('/')}${line === null ? '' : `#L${line}`}`;
+}
+
+export function advisoryURL(id) {
+  return typeof id === "string" && !id.startsWith("DEMO-") && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)
+    ? `https://osv.dev/vulnerability/${encodeURIComponent(id)}` : null;
+}
+
+export function findingPage(findings, filter = "all", page = 0, size = 10) {
+  const sorted = sortFindings(findings).filter(f => filter === "all" ||
+    (filter === "transitive_unknown" ? isTransitiveUnknown(f) :
+      filter === "production" ? f.reachability === "reachable" && findingScope(f) === "production" :
+      filter === "nonproduction" ? f.reachability === "reachable" && ["test_only", "dev_tooling"].includes(findingScope(f)) :
+        reachabilityPresentation(f.reachability).tone === filter));
+  const pages = Math.max(1, Math.ceil(sorted.length / size));
+  const current = Math.max(0, Math.min(page, pages - 1));
+  return { items: sorted.slice(current * size, (current + 1) * size), total: sorted.length, page: current, pages };
+}
+
 export function scanLabel(status) {
   return ({ queued: "Na fila", running: "Em andamento", completed: "Concluída", failed: "Falhou" })[status] || "Estado desconhecido";
 }
@@ -61,7 +89,7 @@ const UNREPORTED = { label: "Não informado", tone: "unknown", order: 1, headlin
 export function reachabilityPresentation(status) {
   return Object.hasOwn(REACHABILITY, status) ? REACHABILITY[status] : UNREPORTED;
 }
-const EVIDENCE_KINDS = { import: "Importa", call: "Chama", dynamic: "Carga dinâmica", escape: "Uso indireto" };
+const EVIDENCE_KINDS = { import: "Importa", entrypoint: "Entrada CLI", transitive_import: "Importa intermediária", transitive_entrypoint: "CLI intermediária", call: "Chama", dynamic: "Carga dinâmica", escape: "Uso indireto" };
 export function evidenceSteps(evidence) {
   return (Array.isArray(evidence) ? evidence : [])
     .filter(item => item && typeof item.path === "string" && item.path && Number.isInteger(item.line) && item.line > 0)
@@ -75,8 +103,51 @@ export function evidenceSteps(evidence) {
     }));
 }
 export function sortFindings(findings) {
+  const order = finding => reachabilityPresentation(finding?.reachability).order * 3 +
+    (finding?.reachability === "reachable" ? findingScope(finding) === "production" ? 0 : findingScope(finding) ? 1 : 2 :
+      reachabilityPresentation(finding?.reachability).tone === "unknown" && !isTransitiveUnknown(finding) ? 1 : 0);
   return (Array.isArray(findings) ? [...findings] : [])
-    .sort((a, b) => reachabilityPresentation(a?.reachability).order - reachabilityPresentation(b?.reachability).order);
+    .sort((a, b) => order(a) - order(b));
+}
+
+export function findingScope(finding) {
+  const scope = finding?.reachability_scope ?? finding?.reachability_analysis?.scope;
+  return ["production", "test_only", "dev_tooling"].includes(scope) ? scope : null;
+}
+
+export function isTransitiveUnknown(finding) {
+  return finding?.reachability === "unknown" && finding?.reachability_analysis?.transitive_imported_via === true;
+}
+
+export function dependencyPresentation(finding) {
+  const relation = finding?.dependency_relation ?? finding?.reachability_analysis?.dependency_relation;
+  if (relation === "direct") return "Direta";
+  if (relation !== "transitive") return "Relação não informada";
+  const chains = finding?.dependency_via ?? finding?.reachability_analysis?.dependency_via;
+  const roots = [...new Set((Array.isArray(chains) ? chains : []).filter(chain => Array.isArray(chain) && typeof chain[0] === "string" && chain[0]).map(chain => chain[0]))];
+  return roots.length ? `Transitiva via ${roots.slice(0, 3).join(", ")}${roots.length > 3 ? ` e mais ${roots.length - 3}` : ""}` : "Transitiva · grafo não resolvido";
+}
+
+export function findingPresentation(finding) {
+  const presentation = reachabilityPresentation(finding?.reachability);
+  const scope = findingScope(finding);
+  if (finding?.reachability !== "reachable" || !scope) return presentation;
+  return { ...presentation, label: scope === "production" ? "Alcançável em produção" : "Alcançável só em testes/ferramentas",
+    headline: scope === "production" ? presentation.headline : "Chamada encontrada em contexto de testes ou ferramentas.",
+    caveat: `${presentation.caveat} O contexto é inferido dos caminhos e do lockfile, não de execução em produção.` };
+}
+
+export function scopeCounts(findings) {
+  const counts = { production: 0, test_only: 0, dev_tooling: 0, unreported: 0 };
+  for (const finding of Array.isArray(findings) ? findings : []) {
+    if (finding?.reachability === "reachable") counts[findingScope(finding) || "unreported"] += 1;
+  }
+  return counts;
+}
+
+export function scopeSummary(counts) {
+  if (!counts) return "";
+  return `${count(counts.production)} alcançáveis em produção · ${count((counts.test_only || 0) + (counts.dev_tooling || 0))} só em testes/ferramentas${counts.unreported ? ` · ${count(counts.unreported)} alcançáveis sem contexto informado` : ""}`;
 }
 export function reachabilityCounts(findings) {
   const counts = { reachable: 0, unknown: 0, unreachable: 0 };
