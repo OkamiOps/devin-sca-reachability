@@ -65,6 +65,16 @@ async function api(path, { method = "GET", body } = {}) {
   } finally { clearTimeout(timer); }
 }
 
+function reachSentence(scan) {
+  if (!scan.finding_count) return "Nenhum achado correlacionado nesta análise.";
+  const counts = scan.reachability_counts;
+  if (!counts) return "Alcance não informado; trate como desconhecido.";
+  const parts = [["reachable", "alcançável", "alcançáveis"], ["unknown", "desconhecido", "desconhecidos"], ["unreachable", "inalcançável", "inalcançáveis"]]
+    .filter(([key]) => counts[key] > 0)
+    .map(([key, one, many]) => `${counts[key]} ${counts[key] === 1 ? one : many}`);
+  return parts.length ? `Alcance estático: ${parts.join(" · ")}.` : "Alcance não informado; trate como desconhecido.";
+}
+
 function items(response) {
   if (!Array.isArray(response?.items)) throw new Error("O serviço retornou uma lista inválida.");
   return response.items;
@@ -192,7 +202,7 @@ function overview() {
     <div class="section-kicker"><span>VISÃO DO AMBIENTE</span><span>Todas as instalações autorizadas</span></div>
     <div class="stats">${stat("Repositórios", data.repositories, "disponíveis no ambiente")}${stat("Branches monitoradas", data.selected_branches, "seleções salvas")}${stat("Análises registradas", data.scans, demo() ? "execuções sintéticas · histórico" : "execuções do serviço · histórico")}${stat("Achados atuais", data.findings, "última análise concluída por branch", true)}</div>
     <div class="toolbar scope-toolbar"><div class="actions">${scopeControls()}</div><a href="#branches" class="button">Gerenciar monitoramento ↗</a></div>
-    ${scopeEmpty() || `<section class="attention-card"><div class="attention-icon" aria-hidden="true">${latest?.finding_count ? "◇" : "↗"}</div><div><span class="eyebrow">PRÓXIMO PASSO · REPOSITÓRIO SELECIONADO</span><h2>${!monitored ? "Escolha suas primeiras branches." : latest ? latest.finding_count ? `${count(latest.finding_count)} ${latest.finding_count === 1 ? "achado para revisar" : "achados para revisar"}.` : "Uma análise pronta para sua revisão." : "Tudo pronto para a primeira análise."}</h2><p>${!monitored ? "Salve uma seleção para iniciar o acompanhamento deste repositório." : latest ? `${e(latest.branch)} · última análise concluída. O alcance do código vulnerável não foi avaliado.` : "Execute uma análise manual ou aguarde um push em uma branch monitorada."}</p></div>${latest && monitored ? button("Revisar última análise →", "detail", "primary", false, `data-id="${e(latest.id)}"`) : '<a href="#branches" class="button primary">Configurar branches →</a>'}</section>`}
+    ${scopeEmpty() || `<section class="attention-card"><div class="attention-icon" aria-hidden="true">${latest?.finding_count ? "◇" : "↗"}</div><div><span class="eyebrow">PRÓXIMO PASSO · REPOSITÓRIO SELECIONADO</span><h2>${!monitored ? "Escolha suas primeiras branches." : latest ? latest.finding_count ? `${count(latest.finding_count)} ${latest.finding_count === 1 ? "achado para revisar" : "achados para revisar"}.` : "Uma análise pronta para sua revisão." : "Tudo pronto para a primeira análise."}</h2><p>${!monitored ? "Salve uma seleção para iniciar o acompanhamento deste repositório." : latest ? `${e(latest.branch)} · última análise concluída. ${e(reachSentence(latest))}` : "Execute uma análise manual ou aguarde um push em uma branch monitorada."}</p></div>${latest && monitored ? button("Revisar última análise →", "detail", "primary", false, `data-id="${e(latest.id)}"`) : '<a href="#branches" class="button primary">Configurar branches →</a>'}</section>`}
     <div class="workflow-strip"><a href="#branches"><span>01</span><div><strong>Escolha as branches</strong><small>Defina o que acompanhar</small></div><b aria-hidden="true">→</b></a><a href="#results"><span>02</span><div><strong>Acompanhe análises</strong><small>Do commit ao resultado</small></div><b aria-hidden="true">→</b></a><a href="#activity"><span>03</span><div><strong>Confira a origem</strong><small>Eventos e execuções vinculados</small></div><b aria-hidden="true">↗</b></a></div>
     <div class="overview-grid"><section class="panel"><div class="section-heading panel-heading"><div><span class="eyebrow">REPOSITÓRIO SELECIONADO</span><h2>Análises recentes</h2></div><a href="#results" class="text-button">Ver todas →</a></div>${scanTable(state.scans.slice(0, 5))}</section>
     <aside class="panel panel-body"><span class="eyebrow">CONEXÕES DO AMBIENTE</span><div class="connection"><div class="inline"><h3>GitHub App</h3>${badge(demo() ? "Simulado" : state.meta.github_configured ? "Configurado" : "Não configurado", !demo() && state.meta.github_configured ? "live" : "muted")}</div><p>${demo() ? "Instalação e eventos simulados. Não há conexão real nesta demonstração." : state.meta.github_configured ? "A configuração está presente. A atividade abaixo confirma os eventos recebidos, não a saúde contínua da conexão." : "O operador precisa configurar o GitHub App no serviço para receber repositórios e eventos."}</p></div>

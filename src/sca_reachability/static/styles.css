@@ -549,7 +549,7 @@ dialog::backdrop { background: #0c1d1ca3; backdrop-filter: blur(2px); }
 @media (max-width: 640px) {
   .report-summary { grid-template-columns: 1fr 1fr; }
   button, .button, summary { min-height: 44px; }
-  button.text-button, a.text-button { display: inline-flex; align-items: center; }
+  button.text-button, a.text-button { min-height: 44px; display: inline-flex; align-items: center; }
   .report-summary .reach-summary { grid-column: 1 / -1; border-top: 1px solid var(--border); border-right: 0; }
   .reach-count { font-size: 18px; }
   .code-path li { padding-left: 22px; }
