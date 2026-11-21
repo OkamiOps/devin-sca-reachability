@@ -557,6 +557,93 @@ class ServerTests(unittest.TestCase):
         self.assertIn("origin_host_kind=other host_header_kind=configured x_forwarded_host_kind=devin_ai", message)
         self.assertNotIn("canary", message)
 
+    def test_loopback_origin_configuration_is_explicit_and_demo_only(self):
+        self.assertFalse(Settings.from_env({"SCA_MODE": "demo"}).allow_loopback_origins)
+        self.assertFalse(Settings.from_env({"SCA_ALLOW_LOOPBACK_ORIGINS": "0"}).allow_loopback_origins)
+        self.assertTrue(Settings.from_env({
+            "SCA_MODE": "demo", "SCA_ALLOW_LOOPBACK_ORIGINS": "1",
+        }).allow_loopback_origins)
+        for values in (
+            {"SCA_ALLOW_LOOPBACK_ORIGINS": "1"},
+            {"SCA_MODE": "live", "SCA_ALLOW_LOOPBACK_ORIGINS": "1"},
+        ):
+            with self.assertRaisesRegex(ValueError, "requires SCA_MODE=demo"):
+                Settings.from_env(values)
+        with self.assertRaisesRegex(ValueError, "requires SCA_MODE=demo"):
+            replace(self.settings, allow_loopback_origins=True)
+        with self.assertRaisesRegex(ValueError, "must be '0' or '1'"):
+            Settings.from_env({"SCA_MODE": "demo", "SCA_ALLOW_LOOPBACK_ORIGINS": "true"})
+
+    def test_demo_opt_in_accepts_exact_loopback_origins_and_http_session_cookie(self):
+        self.settings = replace(
+            self.settings, mode="demo", allow_loopback_origins=True,
+            public_origin="https://configured-canary.invalid",
+        )
+        _, client = self.client(demo=True)
+        client.base_url = "http://localhost:51234"
+        origins = (
+            "http://localhost", "http://localhost:51234", "https://localhost:65535",
+            "http://127.0.0.1:1234", "https://127.0.0.1",
+            "http://[::1]:4321", "https://[::1]",
+            self.settings.public_origin,
+        )
+        with self.assertNoLogs("sca_reachability.server.security", level="WARNING"):
+            for origin in origins:
+                with self.subTest(origin=origin):
+                    headers = {"Origin": origin, "X-SCA-Request": "1"}
+                    response = client.post("/api/session", json={"token": "local-demo"}, headers=headers)
+                    self.assertEqual(response.status_code, 200)
+                    cookie = response.headers["set-cookie"]
+                    self.assertIn("HttpOnly", cookie)
+                    self.assertIn("SameSite=strict", cookie)
+                    self.assertIn("Path=/api", cookie)
+                    self.assertIn("Max-Age=28800", cookie)
+                    self.assertNotIn("domain=", cookie.lower())
+                    self.assertNotIn("secure", cookie.lower())
+                    self.assertNotIn("X-SCA-Diagnostic-ID", response.headers)
+                    self.assertEqual(client.delete("/api/session", headers=headers).status_code, 204)
+                    self.assertEqual(client.get("/api/installations").status_code, 401)
+
+    def test_demo_without_opt_in_rejects_loopback_login_and_mutations(self):
+        self.settings = replace(self.settings, public_origin="https://configured-canary.invalid")
+        _, client = self.client(demo=True)
+        response = client.post("/api/session", json={"token": "local-demo"}, headers={
+            "Origin": self.settings.public_origin, "X-SCA-Request": "1",
+        })
+        self.assertEqual(response.status_code, 200)
+        for origin in ("http://localhost:51234", "https://127.0.0.1", "http://[::1]:1234"):
+            headers = {"Origin": origin, "X-SCA-Request": "1"}
+            self.assertEqual(client.post("/api/session", json={"token": "local-demo"}, headers=headers).status_code, 403)
+            self.assertEqual(client.delete("/api/session", headers=headers).status_code, 403)
+
+    def test_demo_loopback_opt_in_does_not_relax_other_request_validation(self):
+        self.settings = replace(
+            self.settings, mode="demo", allow_loopback_origins=True,
+            public_origin="https://configured-canary.invalid",
+        )
+        origins = (
+            "https://evil.example", "http://localhost.evil.com",
+            "http://127.0.0.1.evil.com", "http://127.0.0.2", "http://localhost.",
+            "http://127.1", "ftp://localhost", "http://localhost:bad-port",
+            "http://localhost:65536", "http://@localhost", "http://localhost/path",
+        )
+        cases = [{"Origin": origin, "X-SCA-Request": "1"} for origin in origins]
+        cases.extend((
+            {"Origin": "http://localhost:51234"},
+            {"Origin": "http://localhost:51234", "X-SCA-Request": "bad-marker"},
+            {"X-SCA-Request": "1"},
+            {"Origin": "https://evil.example", "X-SCA-Request": "1",
+             "X-Forwarded-Host": "localhost:51234", "X-Forwarded-Proto": "http"},
+        ))
+        for headers in cases:
+            with self.subTest(headers=headers):
+                _, client = self.client(demo=True)
+                valid = {"Origin": self.settings.public_origin, "X-SCA-Request": "1"}
+                self.assertEqual(client.post("/api/session", json={"token": "local-demo"}, headers=valid).status_code, 200)
+                self.assertEqual(client.post("/api/session", json={"token": "local-demo"}, headers=headers).status_code, 403)
+                self.assertEqual(client.delete("/api/session", headers=headers).status_code, 403)
+                self.assertEqual(client.delete("/api/session", headers=valid).status_code, 204)
+
     def test_live_login_has_no_demo_diagnostic_logs_or_headers(self):
         _, client = self.client(github=False)
         cases = (

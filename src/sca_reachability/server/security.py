@@ -125,6 +125,18 @@ def _diagnostic_authority(value: str) -> tuple[str, int | None] | None:
         return None
 
 
+def _is_loopback_origin(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+        return (
+            parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            and parsed.username is None and parsed.password is None
+        )
+    except ValueError:
+        return False
+
+
 def _diagnostic_host_kind(
     authority: tuple[str, int | None] | None, configured_host: str | None
 ) -> str:
@@ -228,6 +240,11 @@ def ensure_same_origin(
         raise HTTPException(
             status_code=403, detail="Origin validation failed", headers=headers
         )
+    if (
+        settings.mode == "demo" and settings.allow_loopback_origins
+        and _is_loopback_origin(origin)
+    ):
+        return
     configured = settings.public_origin
     if configured:
         expected = _origin_tuple(configured)

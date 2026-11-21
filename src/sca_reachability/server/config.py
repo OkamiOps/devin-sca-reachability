@@ -21,6 +21,11 @@ class Settings:
     ai_enabled: bool
     ai_api_key: str | None
     ai_model: str | None
+    allow_loopback_origins: bool = False
+
+    def __post_init__(self) -> None:
+        if self.allow_loopback_origins and self.mode != "demo":
+            raise ValueError("SCA_ALLOW_LOOPBACK_ORIGINS requires SCA_MODE=demo")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -28,6 +33,9 @@ class Settings:
         mode = values.get("SCA_MODE", "live").strip().lower()
         if mode not in {"live", "demo"}:
             raise ValueError("SCA_MODE must be 'live' or 'demo'")
+        allow_loopback = values.get("SCA_ALLOW_LOOPBACK_ORIGINS", "0").strip()
+        if allow_loopback not in {"0", "1"}:
+            raise ValueError("SCA_ALLOW_LOOPBACK_ORIGINS must be '0' or '1'")
 
         installation_ids = set()
         for raw_id in values.get("SCA_ALLOWED_INSTALLATION_IDS", "").split(","):
@@ -67,6 +75,7 @@ class Settings:
             ai_enabled=values.get("SCA_AI_ENABLED", "").strip().lower() == "true",
             ai_api_key=values.get("SCA_AI_API_KEY"),
             ai_model=values.get("SCA_AI_MODEL"),
+            allow_loopback_origins=allow_loopback == "1",
         )
 
     @property

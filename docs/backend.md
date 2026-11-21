@@ -16,6 +16,8 @@ Entre com `local-demo`. Esse token é público, exclusivo de demonstração loca
 
 Demo não instancia provedor de IA, mesmo com variáveis de IA acidentalmente presentes, nem clientes externos GitHub/OSV. Nenhum push ou instalação de aplicativo real é realizado.
 
+Para previews demo acessados por um proxy local do desktop, habilite explicitamente `SCA_ALLOW_LOOPBACK_ORIGINS=1` junto com `SCA_MODE=demo`. Além de `SCA_PUBLIC_ORIGIN`, login e mutações passam a aceitar origens HTTP/HTTPS com host exatamente `localhost`, `127.0.0.1` ou `[::1]`, em qualquer porta válida. A opção vem desabilitada; em live, habilitá-la impede a inicialização. Origin e `X-SCA-Request: 1` continuam obrigatórios no login e nas mutações por sessão, sem confiar em `X-Forwarded-*`. Não há CORS amplo. O cookie demo não tem Domain nem Secure (funciona em HTTP local); mantém HttpOnly, SameSite=strict e Path=/api. O cookie live continua Secure.
+
 ## Configuração live
 
 Live é o padrão. O servidor inicia sem credenciais, mas sincronização e serviços indisponíveis retornam 503. Sem token válido não há acesso às APIs protegidas. A allowlist vazia nega todas as instalações. Exemplo com **placeholders, não credenciais**:
