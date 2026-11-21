@@ -5,7 +5,7 @@ const state = {
   meta: null, authenticated: false, view: "overview", dashboard: null,
   installations: [], installation: null, repositories: [], repository: null,
   branches: [], selected: new Set(), scans: [], deliveries: [],
-  filter: "", statusFilter: "all", busy: false, epoch: 0, detailEpoch: 0,
+  filter: "", statusFilter: "all", busy: false, operation: null, epoch: 0, detailEpoch: 0,
   lastUpdated: null, timer: null, noticeTimer: null,
 };
 class ApiError extends Error {
@@ -101,7 +101,7 @@ function renderLogin(message = "") {
 }
 
 function endSession() {
-  state.authenticated = false; state.busy = false; state.epoch++; state.detailEpoch++;
+  state.authenticated = false; state.busy = false; state.operation = null; state.epoch++; state.detailEpoch++;
   clearTimeout(state.timer);
   state.dashboard = null; state.installations = []; state.repositories = []; state.branches = [];
   state.scans = []; state.deliveries = []; state.selected = new Set();
@@ -154,7 +154,7 @@ function branches() {
     <div class="toolbar"><div class="actions">${scopeControls()}</div><div class="actions">${!demo() && state.meta.github_configured ? button("Sincronizar com GitHub", "sync", "", state.busy) : ""}${button("Atualizar lista", "refresh", "", state.busy)}</div></div>
     ${scopeEmpty() || `<div class="branch-layout"><section><div class="section-heading"><div><span class="eyebrow">ESCOPO DO MONITORAMENTO</span><h2>Branches de ${e(repo()?.full_name?.split("/").pop() || "repositório")}</h2></div></div>
       <label class="field" for="branch-search">Buscar branch<input id="branch-search" type="search" placeholder="Filtrar pelo nome…" value="${e(state.filter)}" autocomplete="off"></label><div id="branch-list" class="spaced">${branchRows()}</div>
-      <div class="save-bar"><p id="selection-summary" aria-live="polite">${state.selected.size} selecionada(s)${dirty ? " · Alterações não salvas" : " · Seleção salva"}</p><div class="actions">${button("Descartar", "discard", "quiet", !dirty || state.busy)}${button(state.busy ? "Salvando…" : "Salvar seleção", "save", "primary", !dirty || state.busy)}</div></div>
+      <div class="save-bar"><p id="selection-summary" aria-live="polite">${state.selected.size} selecionada(s)${dirty ? " · Alterações não salvas" : " · Seleção salva"}</p><div class="actions">${button("Descartar", "discard", "quiet", !dirty || state.busy)}${button(state.operation === "save" ? "Salvando…" : "Salvar seleção", "save", "primary", !dirty || state.busy)}</div></div>
       <p class="secondary small spaced">Desmarcar todas pausa novas análises por webhook neste repositório. O histórico é preservado.</p></section>
       <aside class="panel panel-body"><span class="eyebrow">COMO FUNCIONA</span><div class="flow" style="border-top:0;padding-top:0"><span class="flow-number">01</span><div><h3>Selecione e salve</h3><p>A seleção só muda no serviço depois de salvar.</p></div></div><div class="flow"><span class="flow-number">02</span><div><h3>Envie código</h3><p>${demo() ? "Nesta demonstração, simule um push em uma branch salva." : "Um push em uma branch monitorada dispara a análise no serviço."}</p></div></div><div class="flow"><span class="flow-number">03</span><div><h3>Revise os achados</h3><p>Consulte os componentes, as evidências e as limitações de cada execução.</p></div></div>${demo() ? `${button("Simular push de demonstração", "simulate", "", state.busy || dirty || !state.selected.size)}<p class="secondary small" style="margin-top:10px">Usa a primeira branch selecionada. Nenhum push real é enviado ao GitHub.</p>` : ""}</aside></div>`}`;
 }
@@ -182,7 +182,8 @@ function renderView() {
     if (link.dataset.view === state.view) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   });
   $("#main").setAttribute("aria-busy", String(state.busy));
-  $("#main").innerHTML = `${state.busy ? '<p class="loading-status" role="status">Atualizando dados do serviço…</p>' : ""}${({ overview, branches, results, activity })[state.view]()}`;
+  const operationLabel = ({ save: "Salvando a seleção de branches…", scan: "Enviando análise para a fila…", sync: "Consultando o inventário do GitHub…" })[state.operation] || "Atualizando dados do serviço…";
+  $("#main").innerHTML = `${state.busy ? `<p class="loading-status" role="status">${operationLabel}</p>` : ""}${({ overview, branches, results, activity })[state.view]()}`;
 }
 
 function scansPath() {
@@ -270,23 +271,24 @@ async function openDetail(id) {
   }
 }
 
-async function mutation(action) {
+async function mutation(action, operation = null) {
   if (state.busy) return;
-  state.busy = true; const epoch = ++state.epoch; renderView(); clearNotice();
+  state.busy = true; state.operation = operation; const epoch = ++state.epoch; renderView(); clearNotice();
   try {
     await action();
   } catch (error) { if (state.authenticated) notice(error.message, true); }
-  finally { if (epoch === state.epoch) { state.busy = false; renderView(); } scheduleRefresh(); }
+  finally { if (epoch === state.epoch) { state.busy = false; state.operation = null; renderView(); } scheduleRefresh(); }
 }
 async function saveBranches() {
   const selection = [...state.selected];
   await mutation(async () => {
-    await api(`${repositoryPath()}/branches`, { method: "PUT", body: { branches: selection } });
+    const response = await api(`${repositoryPath()}/branches`, { method: "PUT", body: { branches: selection } });
     // Only mark as persisted after the server accepts the mutation.
-    state.branches = state.branches.map(branch => ({ ...branch, selected: selection.includes(branch.name) }));
-    const repository = repo(); if (repository) repository.selected_branches = selection;
-    notice(selection.length ? "Seleção salva. Novos pushes nessas branches entrarão no monitoramento." : "Monitoramento por webhook pausado neste repositório. O histórico foi preservado.");
-  });
+    state.branches = items(response);
+    state.selected = new Set(state.branches.filter(branch => branch.selected).map(branch => branch.name));
+    const repository = repo(); if (repository) repository.selected_branches = [...state.selected];
+    notice(state.selected.size ? "Seleção salva. Novos pushes nessas branches entrarão no monitoramento." : "Monitoramento por webhook pausado neste repositório. O histórico foi preservado.");
+  }, "save");
 }
 async function queueScan(branch, simulate = false) {
   if (isDirty(state.branches, state.selected)) { notice("Salve ou descarte a seleção antes de iniciar uma análise.", true); return; }
@@ -295,7 +297,7 @@ async function queueScan(branch, simulate = false) {
     notice(simulate ? "Push sintético recebido. Acompanhe a análise de demonstração." : "Análise adicionada à fila. O resultado aparecerá quando a execução terminar.");
     const path = scansPath(); if (path) state.scans = items(await api(path));
     if (result?.scan_id) await openDetail(result.scan_id);
-  });
+  }, "scan");
 }
 
 document.addEventListener("submit", async event => {
@@ -306,7 +308,7 @@ document.addEventListener("submit", async event => {
   submit.disabled = true; submit.textContent = "Entrando…"; $("#login-error").hidden = true;
   try {
     await api("/api/session", { method: "POST", body: { token } });
-    field.value = ""; state.authenticated = true; clearNotice(); renderView(); await refresh();
+    field.value = ""; state.authenticated = true; clearNotice(); renderView(); await refresh(); $("#main").focus();
   } catch (error) {
     field.value = ""; $("#login-error").textContent = error.status === 401 ? "Token inválido. Confira o token de acesso do ambiente." : error.message;
     $("#login-error").hidden = false; submit.disabled = false; submit.textContent = "Acessar painel →"; field.focus();
@@ -323,7 +325,7 @@ document.addEventListener("click", async event => {
     await mutation(async () => {
       await api("/api/installations/sync", { method: "POST", body: {} });
       notice("Inventário do GitHub sincronizado. Atualizando repositórios…");
-    });
+    }, "sync");
     await refresh();
   }
   else if (action === "discard") { state.selected = new Set(state.branches.filter(branch => branch.selected).map(branch => branch.name)); renderView(); }

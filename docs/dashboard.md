@@ -70,7 +70,7 @@ Testes puros de apresentação e segurança de saída (Node 20 ou superior, some
 desenvolvimento):
 
 ```sh
-node --test tests/dashboard-model.test.mjs
+node --test tests/dashboard-*.test.mjs
 node --input-type=module --check < src/sca_reachability/static/app.js
 ```
 
