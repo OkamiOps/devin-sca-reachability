@@ -7,7 +7,9 @@ const state = {
   branches: [], selected: new Set(), scans: [], deliveries: [],
   filter: "", statusFilter: "all", busy: false, operation: null, epoch: 0, detailEpoch: 0,
   lastUpdated: null, timer: null, noticeTimer: null, detailTimer: null,
+  selectionError: "", saveError: "",
 };
+const MAX_BRANCHES = 20;
 class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
@@ -26,6 +28,20 @@ async function api(path, { method = "GET", body } = {}) {
       throw new ApiError(401, "Sua sessão não está ativa. Entre novamente.");
     }
     if (!response.ok) {
+      if (response.status === 400) {
+        const messages = {
+          "Select at most 20 distinct existing branch names.": "Selecione no máximo 20 branches distintas.",
+          "A selected branch does not exist in this repository.": "Uma branch selecionada não existe mais. Descarte a edição e atualize a lista.",
+          "The branch is not selected for monitoring.": "Selecione e salve esta branch antes de iniciar a análise.",
+          "An existing selected branch is required.": "Escolha uma branch monitorada para analisar.",
+          "Select and save the demo branch before simulating a push.": "Salve a seleção desta branch para simular.",
+          "The demo branch does not exist.": "A branch de demonstração não está disponível. Atualize a lista.",
+          "A demo repository and existing branch are required.": "Escolha o repositório de demonstração e uma branch monitorada.",
+        };
+        let detail;
+        try { detail = (await response.json()).detail; } catch { /* Keep unknown diagnostics private. */ }
+        throw new ApiError(400, typeof detail === "string" && Object.hasOwn(messages, detail) ? messages[detail] : "Não foi possível validar a seleção. Confira os dados e tente novamente.");
+      }
       // API errors can contain provider diagnostics. Do not echo them into the UI.
       throw new ApiError(response.status, ({
         403: "Você não tem permissão para esta ação.",
@@ -96,7 +112,7 @@ function renderLogin(message = "") {
       <div class="flow spaced"><span class="flow-number">01</span><div><h3>Escolha o que acompanhar</h3><p>Repositórios e branches, no escopo da sua instalação GitHub.</p></div></div>
       <div class="flow"><span class="flow-number">02</span><div><h3>Revise com evidência</h3><p>Achados técnicos separados de explicações geradas por IA.</p></div></div>
     </div>
-    <form id="login-form" class="panel login-form"><span class="eyebrow">ACESSO PRIVADO</span><h2>Entre no seu painel.</h2>${demo() ? '<p class="demo-token">Use o token <code>local-demo</code></p>' : '<p>Use o token de acesso configurado pelo operador deste ambiente. Não é um token pessoal do GitHub.</p>'}
+    <form id="login-form" class="panel login-form" novalidate><span class="eyebrow">ACESSO PRIVADO</span><h2>Entre no seu painel.</h2>${demo() ? '<p class="demo-token">Use o token <code>local-demo</code></p>' : '<p>Use o token de acesso configurado pelo operador deste ambiente. Não é um token pessoal do GitHub.</p>'}
       <label for="access-token">Token de acesso</label><input id="access-token" name="token" type="password" required autocomplete="off" spellcheck="false" placeholder="Seu token de acesso">
       <p id="login-error" class="form-error" role="alert" ${message ? "" : "hidden"}>${e(message)}</p>
       <button class="primary" type="submit">Acessar painel <span aria-hidden="true">→</span></button>
@@ -114,6 +130,7 @@ function endSession() {
   state.installation = null; state.repository = null;
   $("#detail-dialog").close(); $("#detail-content").replaceChildren();
   renderLogin("Sua sessão foi encerrada. Entre novamente para continuar.");
+  focusMain();
 }
 
 function stat(label, value, caption, accent = false) {
@@ -123,7 +140,7 @@ function scanTable(scans) {
   if (!scans.length) return empty("Nenhuma análise por aqui, ainda.", "Selecione as branches que deseja monitorar. As análises aparecerão aqui após um envio de código ou uma execução manual.", '<a href="#branches" class="button">Selecionar branches <span aria-hidden="true">→</span></a>');
   return `<div class="table-wrap responsive-table"><table role="table"><caption class="eyebrow" style="text-align:left">${demo() ? "Análises sintéticas" : "Análises recebidas do serviço"}</caption><thead><tr><th scope="col">Repositório / branch</th><th scope="col">Estado</th><th scope="col">Achados</th><th scope="col">Atualização</th><th scope="col">Relatório</th></tr></thead><tbody>${scans.map(scan => `<tr>
     <td data-label="Repositório / branch"><strong class="break">${e(scan.repository)}</strong><span class="secondary mono">↳ ${e(scan.branch)} <span aria-hidden="true">·</span> ${e(scan.commit_sha?.slice(0, 7) || "sem commit")}</span>${scan.source === "demo" ? badge("Sintético", "demo") : scan.source === "github" ? "" : badge("Origem não informada")}</td>
-    <td data-label="Estado">${badge(scanLabel(scan.status), scan.status)}</td><td data-label="Achados" class="mono">${scan.status === "completed" ? count(scan.finding_count) : "—"}</td>
+    <td data-label="Estado">${badge(scanLabel(scan.status), scan.status)}</td><td data-label="Achados" class="mono">${scan.status === "completed" ? count(scan.finding_count) : "—"}${Array.isArray(scan.advisory_ids) ? scan.advisory_ids.map(id => `<span class="secondary">${e(id)}</span>`).join("") : ""}</td>
     <td data-label="Atualização" class="secondary">${e(formatDate(scan.completed_at || scan.created_at))}</td><td data-label="Relatório">${button("Ver análise →", "detail", "text-button", false, `data-id="${e(scan.id)}" aria-label="Ver análise de ${e(scan.repository)}, branch ${e(scan.branch)}"`)}</td>
   </tr>`).join("")}</tbody></table></div>`;
 }
@@ -152,7 +169,21 @@ function scopeEmpty() {
 function branchRows() {
   const visible = state.branches.filter(branch => branch.name.toLocaleLowerCase("pt-BR").includes(state.filter.toLocaleLowerCase("pt-BR")));
   if (!visible.length) return empty(state.branches.length ? "Nenhuma branch encontrada." : "Nenhuma branch disponível.", state.branches.length ? "Tente buscar por outro nome." : "Verifique se o repositório tem branches e atualize a lista.");
-  return `<div class="panel">${visible.map((branch, index) => `<div class="branch-row"><label for="branch-${index}"><input type="checkbox" id="branch-${index}" data-branch="${e(branch.name)}" ${state.selected.has(branch.name) ? "checked" : ""} ${state.busy ? "disabled" : ""}><span class="mono">${e(branch.name)}</span>${branch.name === repo()?.default_branch ? badge("Principal") : ""}</label><div class="actions"><span data-branch-state="${e(branch.name)}">${branchBadge(branch)}</span>${button("Analisar", "scan", "text-button", state.busy || !branch.selected || isDirty(state.branches, state.selected), `data-branch="${e(branch.name)}" aria-label="Analisar branch ${e(branch.name)}"`)}</div></div>`).join("")}</div>`;
+  return `<div class="panel">${visible.map((branch, index) => `<div class="branch-row"><label for="branch-${index}"><input type="checkbox" id="branch-${index}" data-branch="${e(branch.name)}" ${state.selected.has(branch.name) ? "checked" : ""} ${state.busy || (!state.selected.has(branch.name) && state.selected.size >= MAX_BRANCHES) ? "disabled" : ""}><span class="mono branch-name">${e(branch.name)}</span></label><div class="actions">${branch.name === repo()?.default_branch ? badge("Principal") : ""}<span data-branch-state="${e(branch.name)}">${branchBadge(branch)}</span>${button("Analisar", "scan", "text-button", state.busy || !branch.selected || isDirty(state.branches, state.selected), `data-branch="${e(branch.name)}" aria-label="Analisar branch ${e(branch.name)}"`)}<span class="secondary small" data-branch-blocked>${isDirty(state.branches, state.selected) ? "Salve a seleção para analisar." : !branch.selected ? "Selecione e salve para analisar." : ""}</span></div></div>`).join("")}</div>`;
+}
+function selectionSummary() {
+  return `${state.selected.size} de ${MAX_BRANCHES} branches · ${isDirty(state.branches, state.selected) ? "Alterações não salvas" : "Seleção salva"}`;
+}
+function selectionMessage() {
+  return state.selectionError || (state.selected.size >= MAX_BRANCHES ? "Limite de 20 branches atingido. Desmarque uma para incluir outra." : "");
+}
+function selectFiltered() {
+  const visible = state.branches.filter(branch => branch.name.toLocaleLowerCase("pt-BR").includes(state.filter.toLocaleLowerCase("pt-BR")));
+  for (const branch of visible) {
+    if (state.selected.size >= MAX_BRANCHES) break;
+    state.selected.add(branch.name);
+  }
+  state.selectionError = ""; state.saveError = ""; renderView();
 }
 function branchBadge(branch) {
   const selected = state.selected.has(branch.name);
@@ -168,18 +199,29 @@ function branches() {
   return `${pageHeading("02", 'Escolha o que<br><span class="accent">merece atenção.</span>', "Selecione as branches que devem iniciar uma análise quando novos commits chegarem pelo GitHub.")}
     <div class="toolbar"><div class="actions">${scopeControls()}</div><div class="actions">${!demo() && state.meta.github_configured ? button("Sincronizar com GitHub", "sync", "", state.busy) : ""}${button("Atualizar lista", "refresh", "", state.busy)}</div></div>
     ${scopeEmpty() || `<div class="branch-layout"><section><div class="section-heading"><div><span class="eyebrow">ESCOPO DO MONITORAMENTO</span><h2>Branches de ${e(repo()?.full_name?.split("/").pop() || "repositório")}</h2></div></div>
-      <label class="field" for="branch-search">Buscar branch<input id="branch-search" type="search" placeholder="Filtrar pelo nome…" value="${e(state.filter)}" autocomplete="off"></label><div id="branch-list" class="spaced">${branchRows()}</div>
-      <div class="save-bar"><p id="selection-summary" aria-live="polite">${state.selected.size} selecionada(s)${dirty ? " · Alterações não salvas" : " · Seleção salva"}</p><div class="actions">${button("Descartar", "discard", "quiet", !dirty || state.busy)}${button(state.operation === "save" ? "Salvando…" : "Salvar seleção", "save", "primary", !dirty || state.busy)}</div></div>
+      <label class="field" for="branch-search">Buscar branch<input id="branch-search" type="search" placeholder="Filtrar pelo nome…" value="${e(state.filter)}" autocomplete="off"></label>
+      <div class="actions spaced">${button("Selecionar filtradas", "select-filtered", "quiet", state.busy)}${button("Limpar seleção", "clear-selection", "quiet", state.busy || !state.selected.size)}</div><p class="secondary small">Selecionar filtradas inclui apenas as branches deste repositório que correspondem à busca, até 20 no total. Limpar seleção desmarca todas deste repositório, inclusive as ocultas pelo filtro.</p>
+      <div class="save-bar"><p id="selection-summary" aria-live="polite">${selectionSummary()}</p><div class="actions">${button("Descartar", "discard", "quiet", !dirty || state.busy)}${button(state.operation === "save" ? "Salvando…" : "Salvar seleção", "save", "primary", !dirty || state.busy || state.selected.size > MAX_BRANCHES)}</div><p id="selection-error" class="form-error" role="status">${e(selectionMessage())}</p><p id="save-error" class="form-error" role="alert">${e(state.saveError)}</p></div>
+      <div id="branch-list" class="spaced branch-list">${branchRows()}</div>
       <p class="secondary small spaced">Desmarcar todas pausa novas análises por webhook neste repositório. O histórico é preservado.</p></section>
       <aside class="panel panel-body"><span class="eyebrow">COMO FUNCIONA</span><div class="flow" style="border-top:0;padding-top:0"><span class="flow-number">01</span><div><h3>Selecione e salve</h3><p>A seleção só muda no serviço depois de salvar.</p></div></div><div class="flow"><span class="flow-number">02</span><div><h3>Envie código</h3><p>${demo() ? "Nesta demonstração, simule um push em uma branch salva." : "Um push em uma branch monitorada dispara a análise no serviço."}</p></div></div><div class="flow"><span class="flow-number">03</span><div><h3>Revise os achados</h3><p>Consulte os componentes, as evidências e as limitações de cada execução.</p></div></div><div id="simulation-controls">${demo() ? simulationControls() : ""}</div></aside></div>`}`;
 }
 
+function matchingScans() {
+  const query = state.filter.toLocaleLowerCase("pt-BR");
+  return state.scans.filter(scan => (state.statusFilter === "all" || scan.status === state.statusFilter) &&
+    [scan.repository, scan.branch, scan.commit_sha, ...(Array.isArray(scan.advisory_ids) ? scan.advisory_ids : []), ...(Array.isArray(scan.package_names) ? scan.package_names : [])].join(" ").toLocaleLowerCase("pt-BR").includes(query));
+}
+function resultsList() {
+  const filtered = matchingScans();
+  if (filtered.length) return scanTable(filtered);
+  return !state.filter.trim() && state.statusFilter === "all" ? scanTable([]) : empty("Nenhuma análise corresponde aos filtros.", "Tente outro termo ou escolha todos os estados.");
+}
 function results() {
-  const filtered = state.scans.filter(scan => (state.statusFilter === "all" || scan.status === state.statusFilter) && `${scan.repository} ${scan.branch} ${scan.commit_sha || ""}`.toLocaleLowerCase("pt-BR").includes(state.filter.toLocaleLowerCase("pt-BR")));
   return `${pageHeading("03", 'Resultados com<br><span class="accent">origem e contexto.</span>', "Cada execução mantém seu commit, seus achados e os limites do que foi analisado.")}
     <div class="toolbar"><div class="actions">${scopeControls()}<label class="field" for="status-filter">Estado<select id="status-filter" data-control="status">${[["all", "Todos os estados"], ["queued", "Na fila"], ["running", "Em andamento"], ["completed", "Concluída"], ["failed", "Falhou"]].map(([value, label]) => `<option value="${value}" ${state.statusFilter === value ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>${button("Atualizar", "refresh", "", state.busy)}</div>
-    ${scopeEmpty() || `<label class="field" for="results-search">Buscar análises<input id="results-search" type="search" placeholder="Repositório, branch ou commit…" value="${e(state.filter)}" autocomplete="off"></label><div id="results-list" class="spaced">${filtered.length ? scanTable(filtered) : state.scans.length ? empty("Nenhuma análise corresponde aos filtros.", "Tente outro termo ou escolha todos os estados.") : scanTable([])}</div>`}
-    <p class="secondary small spaced">${state.lastUpdated ? `Última atualização do painel: ${e(formatDate(state.lastUpdated))}.` : ""} Atualização automática a cada 15 segundos; filtros e seleções em edição são preservados.</p>`;
+    ${scopeEmpty() || `<label class="field" for="results-search">Buscar análises<input id="results-search" type="search" placeholder="Aviso, pacote, repositório, branch ou commit…" value="${e(state.filter)}" autocomplete="off"></label><div id="results-list" class="spaced">${resultsList()}</div>`}
+    <p class="secondary small spaced"><span id="last-updated">${state.lastUpdated ? `Última atualização do painel: ${e(formatDate(state.lastUpdated))}.` : ""}</span> Atualização automática a cada 15 segundos; filtros e seleções em edição são preservados.</p>`;
 }
 function activity() {
   return `${pageHeading("04", 'A história começa<br><span class="accent">em um evento.</span>', "Confira os eventos recebidos pelo serviço e acompanhe o que entrou no fluxo de monitoramento.", `<div class="actions">${button("Atualizar", "refresh", "", state.busy)}</div>`)}
@@ -208,11 +250,11 @@ function scansPath() {
 async function loadScoped(epoch) {
   const installations = items(await api("/api/installations"));
   if (epoch !== state.epoch) return false;
-  const installation = installations.some(item => String(item.id) === String(state.installation) && item.status === "active") ? state.installation : installations.find(item => item.status === "active")?.id ?? null;
+  const installation = installations.find(item => String(item.id) === String(state.installation) && item.status === "active")?.id ?? installations.find(item => item.status === "active")?.id ?? null;
   if (!installation) { Object.assign(state, { installations, installation: null, repositories: [], repository: null, branches: [], selected: new Set(), scans: [] }); return true; }
   const repositories = items(await api(`/api/installations/${encodeURIComponent(installation)}/repositories`));
   if (epoch !== state.epoch) return false;
-  const repository = repositories.some(item => String(item.id) === String(state.repository)) ? state.repository : repositories[0]?.id ?? null;
+  const repository = repositories.find(item => String(item.id) === String(state.repository))?.id ?? repositories[0]?.id ?? null;
   if (!repository) { Object.assign(state, { installations, installation, repositories, repository: null, branches: [], selected: new Set(), scans: [] }); return true; }
   const [branchesResponse, scansResponse] = await Promise.all([
     api(`${scopedRepositoryPath(installation, repository)}/branches`),
@@ -238,6 +280,12 @@ async function refresh({ full = true, silent = false } = {}) {
     state.lastUpdated = new Date().toISOString();
     // Background polling must not destroy focus, search text, or edited branch choices.
     if (!silent) renderView();
+    else if (state.view === "results") {
+      const list = $("#results-list");
+      if (list) list.innerHTML = resultsList();
+      const updated = $("#last-updated");
+      if (updated) updated.textContent = `Última atualização do painel: ${formatDate(state.lastUpdated)}.`;
+    }
     else if (!$("#detail-dialog").open && !$("#main").contains(document.activeElement) && state.view !== "branches") renderView();
   } catch (error) {
     if (epoch === state.epoch && state.authenticated) notice(`${error.message}${silent ? " Os dados exibidos podem estar desatualizados." : ""}`, true);
@@ -254,10 +302,50 @@ function scheduleRefresh() {
   }, 15000);
 }
 
-function findingMarkup(finding) {
+function findingManifests(finding, scan) {
+  return [...new Set((Array.isArray(scan.components) ? scan.components : [])
+    .filter(component => (finding.purl && component.purl === finding.purl) ||
+      (component.name === finding.package_name && component.version === finding.version && component.ecosystem === finding.ecosystem))
+    .map(component => component.manifest_path).filter(path => typeof path === "string" && path))];
+}
+function advisoryLink(id) {
+  if (typeof id !== "string") return "Identificador não informado";
+  if (id.startsWith("DEMO-")) return `${e(id)} · fictício`;
+  const valid = /^(?:CVE-\d{4}-\d{4,}|GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}|[A-Z][A-Z0-9]*-\d{4}-[A-Za-z0-9.-]+)$/.test(id);
+  return valid ? `<a href="https://osv.dev/vulnerability/${encodeURIComponent(id)}" target="_blank" rel="noopener noreferrer">${e(id)}</a>` : e(id);
+}
+function manifestLink(path, scan) {
+  const repository = scan.repository;
+  const validRepository = typeof repository === "string" && /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/.test(repository) && ![".", ".."].includes(repository.split("/")[1]);
+  const parts = path.split("/");
+  if (demo() || scan.source !== "github" || !validRepository || !/^[0-9a-f]{40}$/i.test(scan.commit_sha || "") || parts.some(part => !part || part === "." || part === "..")) return e(path);
+  const url = `https://github.com/${repository.split("/").map(encodeURIComponent).join("/")}/blob/${scan.commit_sha}/${parts.map(encodeURIComponent).join("/")}`;
+  return `<a href="${e(url)}" target="_blank" rel="noopener noreferrer">${e(path)}</a>`;
+}
+function findingInstructions(finding, scan) {
+  const versions = Array.isArray(finding.fixed_versions) ? finding.fixed_versions : [];
+  const version = versions.length ? versions.join(" ou ") : "(sem versão corrigida informada)";
+  const manifests = findingManifests(finding, scan).join(", ") || "manifesto não informado";
+  return `Verifique a compatibilidade de ${finding.package_name || "componente não informado"} ${version} em ${manifests}; atualize, teste e execute nova análise. A presença da dependência não comprova alcance.`;
+}
+async function copyInstructions(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    $("#detail-announcement").textContent = "Instruções copiadas.";
+    return true;
+  } catch {
+    $("#detail-announcement").textContent = "Não foi possível copiar. Selecione e copie o texto do próximo passo.";
+    return false;
+  }
+}
+function findingMarkup(finding, scan) {
   const severity = ({ critical: "Crítica", high: "Alta", medium: "Média", moderate: "Moderada", low: "Baixa", unknown: "Não informada" })[finding.severity?.toLowerCase()] || "Não informada";
+  const paths = findingManifests(finding, scan);
+  const manifests = paths.length ? paths.map(path => manifestLink(path, scan)).join(", ") : "manifesto não informado";
+  const instructions = findingInstructions(finding, scan);
   return `<article class="finding"><div class="section-heading"><h3>${e(finding.advisory_id || finding.id)}</h3>${badge(reachabilityLabel(finding.reachability), finding.reachability === "unknown" ? "unknown" : "muted")}</div><p><strong>${e(finding.package_name)}</strong> <span class="mono secondary">${e(finding.version)}</span> <span class="secondary">· Severidade: ${severity}</span></p><p class="secondary">${e(finding.summary || "O aviso não inclui um resumo.")}</p>
-    <details><summary>Ver evidências e limites</summary><div class="evidence"><dl><dt>Identificador</dt><dd class="mono">${e(finding.advisory_id || finding.id)}</dd><dt>Componente</dt><dd class="mono">${e(finding.purl || finding.package_name)}</dd><dt>Ecossistema</dt><dd>${e(finding.ecosystem || "Não informado")}</dd><dt>Correção informada</dt><dd>${e(finding.fixed_versions?.length ? finding.fixed_versions.join(", ") : "Nenhuma versão informada nos dados")}</dd><dt>Alcance</dt><dd>${e(reachabilityLabel(finding.reachability))}. ${finding.reachability === "unknown" ? "A presença da dependência não prova que o caminho vulnerável é executado." : "Consulte a evidência técnica da análise; o resumo de IA não é uma comprovação."}</dd></dl></div></details></article>`;
+    <details><summary>Ver evidências e limites</summary><div class="evidence"><h4>Por que este achado apareceu?</h4><p><span class="mono">${e(finding.package_name)}@${e(finding.version)}</span> encontrado em ${manifests} no commit <span class="mono">${e(scan.commit_sha?.slice(0, 7) || "não informado")}</span>. ${scan.source === "demo" ? "Correlação sintética por versão exata com o aviso fictício; não houve consulta ao OSV." : "Correspondência com o aviso por versão exata via OSV."}</p><p>Não foi feita análise de fluxo/chamadas; por isso o alcance é desconhecido.</p><dl><dt>Identificador</dt><dd class="mono">${advisoryLink(finding.advisory_id || finding.id)}</dd><dt>Componente</dt><dd class="mono">${e(finding.purl || finding.package_name)}</dd><dt>Ecossistema</dt><dd>${e(finding.ecosystem || "Não informado")}</dd><dt>Correção informada</dt><dd>${e(finding.fixed_versions?.length ? finding.fixed_versions.join(", ") : "Nenhuma versão informada nos dados")}</dd><dt>Alcance</dt><dd>${e(reachabilityLabel(finding.reachability))}. A presença da dependência não prova que o caminho vulnerável é executado.</dd></dl></div></details>
+    <section class="next-step"><h4>Próximo passo</h4><p>${e(instructions)}</p>${button("Copiar instruções", "copy-instructions", "quiet", false, `data-instructions="${e(instructions)}"`)}</section></article>`;
 }
 async function openDetail(id, polling = false) {
   clearTimeout(state.detailTimer);
@@ -273,17 +361,17 @@ async function openDetail(id, polling = false) {
     const components = Array.isArray(scan.components) ? scan.components : [];
     const warnings = Array.isArray(scan.warnings) ? scan.warnings : [];
     const pending = ["queued", "running"].includes(scan.status);
-    $("#detail-content").innerHTML = `<div class="dialog-heading"><div><span class="eyebrow">RELATÓRIO DA EXECUÇÃO</span><h2 id="detail-title">${scan.status === "completed" ? findings.length ? `${count(findings.length)} achado(s).` : "Sem achados nos dados." : e(scanLabel(scan.status))}</h2></div>${button("Fechar", "close-detail", "quiet")}</div>
+    $("#detail-content").innerHTML = `<div class="dialog-heading"><div><span class="eyebrow">RELATÓRIO DA EXECUÇÃO</span><h2 id="detail-title">${scan.status === "completed" ? findings.length ? `${count(findings.length)} ${findings.length === 1 ? "achado" : "achados"}.` : "Sem achados nos dados." : e(scanLabel(scan.status))}</h2></div>${button("Fechar", "close-detail", "quiet")}</div>
       <div class="inline">${badge(scanLabel(scan.status), scan.status)}${badge(scan.source === "demo" ? "Demonstração · dados fictícios" : scan.source === "github" ? "Origem: GitHub" : "Origem não informada", scan.source === "demo" ? "demo" : "muted")}</div>
       <div class="dialog-meta"><span class="break">${e(scan.repository)} <span aria-hidden="true">/</span> ${e(scan.branch)}</span><span class="mono">Commit ${e(scan.commit_sha || "não informado")}</span><span>${e(formatDate(scan.completed_at || scan.created_at))}</span></div>
       ${scan.source === "demo" ? '<p class="note">Este relatório é sintético. Não representa o estado de segurança de um projeto real.</p>' : ""}
-      ${scan.error ? '<p class="note form-error">A execução falhou. Verifique a configuração do serviço e os registros com o operador; dados incompletos não comprovam ausência de vulnerabilidades.</p>' : ""}
+      ${scan.status === "failed" ? `<p class="note form-error">A análise falhou e não produziu resultados. Nenhuma conclusão de segurança pode ser extraída.</p><p>Você pode tentar novamente com a mesma branch e o mesmo commit, se a branch continuar monitorada.</p>${button("Tentar novamente", "retry-scan", "quiet", false, `data-id="${e(id)}"`)}<p id="detail-action-error" class="form-error" role="alert"></p>` : ""}
       ${pending ? `<p class="note">Resultados ainda não calculados. Acompanhando automaticamente. ${button("Atualizar agora", "detail", "text-button", false, `data-id="${e(id)}"`)}</p>` : ""}
       ${warnings.length ? `<div class="note"><strong>Limitações informadas pelo serviço</strong><ul>${warnings.map(warning => `<li class="break">${e(warning)}</li>`).join("")}</ul></div>` : ""}
       ${scan.status === "completed" ? `
-      <section class="spaced" aria-label="Achados técnicos"><span class="eyebrow">01 / RESULTADO TÉCNICO</span>${findings.length ? findings.map(findingMarkup).join("") : empty("Nenhum achado disponível.", scan.status === "completed" ? "Nenhum aviso nos dados analisados. Isso não significa que o projeto está livre de vulnerabilidades." : "Aguarde uma execução concluída para consultar os achados.")}</section>
+      <section class="spaced" aria-label="Achados técnicos"><span class="eyebrow">01 / RESULTADO TÉCNICO</span>${findings.length ? findings.map(finding => findingMarkup(finding, scan)).join("") : empty("Nenhum achado disponível.", "Nenhum aviso nos dados analisados. Isso não significa que o projeto está livre de vulnerabilidades.")}</section>
       <section class="explanation"><span class="eyebrow">02 / APOIO À LEITURA</span><div class="inline"><h3>${e(explanation.title)}</h3>${explanation.ai ? badge("IA · conteúdo não verificado", "unknown") : ""}</div>${explanation.note ? `<p class="secondary small">${e(explanation.note)}</p>` : ""}<p>${e(explanation.text)}</p><p class="secondary small">${explanation.ai ? "Texto gerado por IA, não uma evidência técnica. Pode conter erros. " : ""}A explicação não altera os achados nem comprova se um caminho vulnerável é executado.</p></section>
-      <details class="spaced"><summary>Componentes analisados (${count(components.length)})</summary><div class="table-wrap spaced"><table><thead><tr><th scope="col">Componente</th><th scope="col">Versão</th><th scope="col">Ecossistema / manifesto</th></tr></thead><tbody>${components.map(component => `<tr><td class="break">${e(component.name)}<span class="secondary mono">${e(component.purl)}</span></td><td class="mono">${e(component.version)}</td><td>${e(component.ecosystem)}<span class="secondary mono">${e(component.manifest_path || "—")}</span></td></tr>`).join("")}</tbody></table></div></details>` : ""}`;
+      <details class="spaced"><summary>Componentes analisados (${count(components.length)})</summary><div class="table-wrap spaced"><table><thead><tr><th scope="col">Componente</th><th scope="col">Versão</th><th scope="col">Ecossistema / manifesto</th></tr></thead><tbody>${components.map(component => `<tr><td class="break">${e(component.name)}<span class="secondary mono">${e(component.purl)}</span></td><td class="mono">${e(component.version)}</td><td>${e(component.ecosystem)}<span class="secondary mono">${e(component.manifest_path || "—")}</span></td></tr>`).join("")}</tbody></table></div></details>` : ""}<div class="dialog-footer">${button("Fechar relatório", "close-detail", "quiet")}</div>`;
     $("#detail-announcement").textContent = `Análise: ${scanLabel(scan.status)}.`;
     if (pending) state.detailTimer = setTimeout(() => {
       if (dialog.open && epoch === state.detailEpoch) return openDetail(id, true);
@@ -298,10 +386,15 @@ async function mutation(action, operation = null) {
   state.busy = true; state.operation = operation; const epoch = ++state.epoch; renderView(); clearNotice();
   try {
     await action();
-  } catch (error) { if (state.authenticated) notice(error.message, true); }
+  } catch (error) {
+    if (operation === "save") state.saveError = error.message;
+    if (state.authenticated) notice(error.message, true);
+  }
   finally { if (epoch === state.epoch) { state.busy = false; state.operation = null; renderView(); } scheduleRefresh(); }
 }
 async function saveBranches() {
+  state.saveError = "";
+  if (state.selected.size > MAX_BRANCHES) { state.selectionError = "Selecione no máximo 20 branches."; renderView(); return; }
   const selection = [...state.selected];
   await mutation(async () => {
     const response = await api(`${repositoryPath()}/branches`, { method: "PUT", body: { branches: selection } });
@@ -315,7 +408,7 @@ async function saveBranches() {
 async function queueScan(branch, simulate = false) {
   if (isDirty(state.branches, state.selected)) { notice("Salve ou descarte a seleção antes de iniciar uma análise.", true); return; }
   await mutation(async () => {
-    const result = await api(simulate ? "/api/demo/push" : `${repositoryPath()}/scan`, { method: "POST", body: simulate ? { repository_id: state.repository, branch } : { branch } });
+    const result = await api(simulate ? "/api/demo/push" : `${repositoryPath()}/scan`, { method: "POST", body: simulate ? { repository_id: Number(state.repository), branch } : { branch } });
     notice(simulate ? "Push sintético recebido. Acompanhe a análise de demonstração." : "Análise adicionada à fila. O resultado aparecerá quando a execução terminar.");
     const path = scansPath(); if (path) state.scans = items(await api(path));
     if (result?.scan_id) await openDetail(result.scan_id);
@@ -327,6 +420,10 @@ document.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target; const submit = form.querySelector('button[type="submit"]');
   const field = form.elements.token; const token = field.value;
+  if (!token.trim()) {
+    $("#login-error").textContent = "Informe o token de acesso para entrar.";
+    $("#login-error").hidden = false; field.focus({ preventScroll: true }); return;
+  }
   submit.disabled = true; submit.textContent = "Entrando…"; $("#login-error").hidden = true;
   try {
     await api("/api/session", { method: "POST", body: { token } });
@@ -354,7 +451,9 @@ document.addEventListener("click", async event => {
     }, "sync");
     await refresh();
   }
-  else if (action === "discard") { state.selected = new Set(state.branches.filter(branch => branch.selected).map(branch => branch.name)); renderView(); }
+  else if (action === "discard") { state.selected = new Set(state.branches.filter(branch => branch.selected).map(branch => branch.name)); state.selectionError = ""; state.saveError = ""; renderView(); }
+  else if (action === "select-filtered") selectFiltered();
+  else if (action === "clear-selection") { state.selected.clear(); state.selectionError = ""; state.saveError = ""; renderView(); }
   else if (action === "save") await saveBranches();
   else if (action === "scan") await queueScan(target.dataset.branch);
   else if (action === "simulate" && demo()) {
@@ -362,6 +461,15 @@ document.addEventListener("click", async event => {
     if (state.branches.some(value => value.name === branch && value.selected)) await queueScan(branch, true);
   }
   else if (action === "detail") await openDetail(target.dataset.id);
+  else if (action === "copy-instructions") target.textContent = await copyInstructions(target.dataset.instructions) ? "Instruções copiadas" : "Não foi possível copiar; selecione o texto acima";
+  else if (action === "retry-scan") {
+    target.disabled = true;
+    try {
+      const result = await api(`/api/scans/${encodeURIComponent(target.dataset.id)}/retry`, { method: "POST", body: {} });
+      await openDetail(result.scan_id);
+    } catch (error) { $("#detail-action-error").textContent = error.message; }
+    finally { target.disabled = false; }
+  }
   else if (action === "close-detail") { clearTimeout(state.detailTimer); state.detailEpoch++; $("#detail-dialog").close(); }
   else if (action === "boot") await boot();
 });
@@ -369,17 +477,31 @@ document.addEventListener("click", async event => {
 document.addEventListener("change", async event => {
   const target = event.target;
   if (target.matches('input[type="checkbox"][data-branch]')) {
+    state.selectionError = ""; state.saveError = "";
+    if (target.checked && !state.selected.has(target.dataset.branch) && state.selected.size >= MAX_BRANCHES) {
+      target.checked = false;
+      state.selectionError = "Limite de 20 branches. Desmarque uma antes de incluir outra.";
+    }
     if (target.checked) state.selected.add(target.dataset.branch); else state.selected.delete(target.dataset.branch);
     // Preserve keyboard focus on the checkbox when updating the save controls.
-    $("#selection-summary").textContent = `${state.selected.size} selecionada(s) · ${isDirty(state.branches, state.selected) ? "Alterações não salvas" : "Seleção salva"}`;
+    $("#selection-summary").textContent = selectionSummary();
+    $("#selection-error").textContent = selectionMessage();
+    $("#save-error").textContent = "";
     const dirty = isDirty(state.branches, state.selected);
     $('[data-action="save"]').disabled = !dirty; $('[data-action="discard"]').disabled = !dirty;
+    $('[data-action="clear-selection"]').disabled = state.busy || !state.selected.size;
     document.querySelectorAll("[data-branch-state]").forEach(node => {
       const branch = state.branches.find(value => value.name === node.dataset.branchState);
       if (branch) node.innerHTML = branchBadge(branch);
     });
     document.querySelectorAll('[data-action="scan"]').forEach(node => {
       node.disabled = dirty || state.busy || !state.branches.some(branch => branch.name === node.dataset.branch && branch.selected);
+    });
+    document.querySelectorAll("[data-branch-blocked]").forEach(node => {
+      node.textContent = dirty ? "Salve a seleção para analisar." : "";
+    });
+    document.querySelectorAll('input[type="checkbox"][data-branch]').forEach(node => {
+      node.disabled = state.busy || (!node.checked && state.selected.size >= MAX_BRANCHES);
     });
     if (demo()) $("#simulation-controls").innerHTML = simulationControls();
     return;
@@ -394,6 +516,7 @@ document.addEventListener("change", async event => {
     if (target.dataset.control === "installation") { state.installation = target.value; state.repository = null; state.repositories = []; }
     else state.repository = target.value;
     state.branches = []; state.selected = new Set(); state.scans = []; state.filter = "";
+    state.selectionError = ""; state.saveError = "";
     await refresh();
   }
 });
@@ -402,8 +525,7 @@ document.addEventListener("input", event => {
   if (event.target.id === "branch-search") { state.filter = event.target.value; $("#branch-list").innerHTML = branchRows(); }
   if (event.target.id === "results-search") {
     state.filter = event.target.value;
-    const filtered = state.scans.filter(scan => (state.statusFilter === "all" || scan.status === state.statusFilter) && `${scan.repository} ${scan.branch} ${scan.commit_sha || ""}`.toLocaleLowerCase("pt-BR").includes(state.filter.toLocaleLowerCase("pt-BR")));
-    $("#results-list").innerHTML = filtered.length ? scanTable(filtered) : empty("Nenhuma análise corresponde aos filtros.", "Tente outro termo ou escolha todos os estados.");
+    $("#results-list").innerHTML = resultsList();
   }
 });
 

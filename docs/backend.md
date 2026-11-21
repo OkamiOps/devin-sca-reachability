@@ -46,9 +46,10 @@ Principais rotas (listas usam `{"items":[...]}`):
 - GET /api/installations/{id}/repositories.
 - GET/PUT /api/installations/{id}/repositories/{repo_id}/branches. PUT recebe `{"branches":["main"]}`; nomes existentes exatos, máximo 20; lista vazia pausa o monitoramento.
 - POST /api/installations/{id}/repositories/{repo_id}/scan recebe `{"branch":"main"}`, resolve o SHA atual e retorna 202 com scan_id e status queued.
-- GET /api/scans (filtros installation_id/repository_id, até 100 recentes); GET /api/scans/{id} inclui componentes, achados, avisos e explicação salva.
-- GET /api/deliveries; GET /api/dashboard. Achados do dashboard consideram a análise completa mais recente de cada branch, sem somar repetições históricas.
-- POST /api/demo/push recebe repository_id/branch, exige autenticação/CSRF e existe somente em demo.
+- GET /api/scans (filtros installation_id/repository_id, até 100 recentes) inclui advisory_ids e package_names distintos para busca local; GET /api/scans/{id} inclui componentes, achados, avisos e explicação salva.
+- POST /api/scans/{id}/retry reenfileira somente uma análise falha autorizada, no mesmo commit e branch ainda monitorada. A tentativa explícita usa um novo job, com até três tentativas automáticas, sem duplicar o scan.
+- GET /api/deliveries inclui o resultado imutável do evento e scan_id/scan_status atual quando associado; GET /api/dashboard. Achados do dashboard consideram a análise completa mais recente de cada branch, sem somar repetições históricas.
+- POST /api/demo/push recebe repository_id numérico/branch salva e selecionada, exige autenticação/CSRF e existe somente em demo. Meta informa github_configured:false; a conexão é simulada.
 
 ## Processamento, armazenamento e limites
 

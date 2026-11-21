@@ -144,6 +144,7 @@ class ServerTests(unittest.TestCase):
         detail = client.get("/api/scans/" + initial["id"]).json()
         self.assertEqual((detail["component_count"], detail["finding_count"]), (1, 1))
         self.assertEqual(detail["findings"][0]["reachability"], "unknown")
+        self.assertIn("Aviso sintético", detail["findings"][0]["summary"])
         self.assertEqual(detail["explanation"]["source"], "deterministic")
         path = "/api/installations/9001/repositories/9002/branches"
         self.assertEqual(client.put(path, json={"branches": ["main", "release"]}).status_code, 403)
@@ -181,6 +182,58 @@ class ServerTests(unittest.TestCase):
         self.assertIsNone(delivery()["scan_id"])
         self.assertIsNone(delivery()["scan_status"])
         self.assertEqual(delivery()["status"], "ignored")
+
+    def test_scan_list_includes_compact_advisory_and_package_search_metadata(self):
+        app, client = self.client()
+        self.assertEqual(client.get("/api/scans", headers=AUTH).json()["items"], [])
+        self.select(client)
+        self.push(client)
+        queued = client.get("/api/scans", headers=AUTH).json()["items"][0]
+        self.assertEqual(queued["advisory_ids"], [])
+        self.assertEqual(queued["package_names"], [])
+        app.state.worker.run_once()
+        completed = client.get("/api/scans", headers=AUTH).json()["items"][0]
+        self.assertEqual(completed["advisory_ids"], ["DEMO-0001"])
+        self.assertEqual(completed["package_names"], ["fictional-demo-package"])
+        self.github.content = self.github.content.replace(b"1.0.0", b"1.1.0")
+        self.push(client, "clean", sha="d" * 40)
+        app.state.worker.run_once()
+        clean = client.get("/api/scans", headers=AUTH).json()["items"][0]
+        self.assertEqual(clean["advisory_ids"], [])
+        self.assertEqual(clean["package_names"], ["fictional-demo-package"])
+
+    def test_explicit_failed_scan_retry_is_scoped_pinned_and_fences_old_jobs(self):
+        app, client = self.client()
+        self.select(client)
+        self.github.truncated = True
+        scan_id = self.push(client).json()["scan_id"]
+        app.state.worker.run_once()
+        with app.state.database.connection() as connection:
+            old_job = dict(connection.execute("SELECT * FROM jobs WHERE scan_id = ?", (scan_id,)).fetchone())
+        path = "/api/scans/" + scan_id + "/retry"
+        self.assertEqual(client.post(path).status_code, 401)
+        result = client.post(path, headers=AUTH)
+        self.assertEqual(result.status_code, 202, result.text)
+        self.assertEqual(result.json()["scan_id"], scan_id)
+        with app.state.database.connection() as connection:
+            job = connection.execute("SELECT * FROM jobs WHERE scan_id = ?", (scan_id,)).fetchone()
+            self.assertGreater(job["id"], old_job["id"])
+            self.assertEqual((job["commit_sha"], job["attempts"]), ("c" * 40, 0))
+        app.state.worker._fail(old_job, "stale")
+        self.assertEqual(client.get("/api/scans/" + scan_id, headers=AUTH).json()["status"], "queued")
+        self.assertEqual(client.post(path, headers=AUTH).status_code, 409)
+        self.github.truncated = False
+        app.state.worker.run_once()
+        detail = client.get("/api/scans/" + scan_id, headers=AUTH).json()
+        self.assertEqual(detail["status"], "completed")
+        self.assertEqual(self.github.tree_commits, ["c" * 40, "c" * 40])
+        self.assertEqual(client.post(path, headers=AUTH).status_code, 409)
+        self.assertEqual(client.post("/api/scans/missing/retry", headers=AUTH).status_code, 404)
+        self.github.truncated = True
+        failed = self.push(client, "other-failed", sha="d" * 40).json()["scan_id"]
+        app.state.worker.run_once()
+        self.select(client, ())
+        self.assertEqual(client.post("/api/scans/" + failed + "/retry", headers=AUTH).status_code, 400)
 
     def test_sessions_origin_hash_expiry_logout(self):
         app, client = self.client(demo=True)

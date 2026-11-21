@@ -25,14 +25,16 @@ function harness(responder) {
     return nodes.get(selector);
   }
   const calls = [];
+  const clipboard = { values: [], async writeText(text) { this.values.push(text); } };
   const sandbox = {
     ...model, e: model.escapeHTML, console, URLSearchParams, AbortController,
     setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, delay }); return id; },
     clearTimeout(id) { timers.delete(id); }, matchMedia() { return { matches: false }; },
     localStorage: { getItem() { return null; }, setItem() {} }, location: { hash: "" },
+    navigator: { clipboard },
     window: { addEventListener(name, handler) { windowEvents.set(name, handler); }, scrollTo() {} }, document: {
       querySelector: node, querySelectorAll() { return []; },
-      addEventListener(name, handler) { events.set(name, handler); }, documentElement: { dataset: {} }, activeElement: null,
+      addEventListener(name, handler) { events.set(name, handler); }, documentElement: { dataset: {} }, activeElement: null, visibilityState: "visible",
     },
     async fetch(path, options) {
       calls.push({ path, options });
@@ -40,8 +42,8 @@ function harness(responder) {
       return new Response(JSON.stringify(result.body ?? {}), { status: result.status ?? 200, headers: { "Content-Type": "application/json" } });
     },
   };
-  vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped, overview, activity, scanTable, branchRows, simulationControls, renderLogin, openDetail, focusMain };`, sandbox);
-  return { ...sandbox.testApp, nodes, calls, events, windowEvents, timers,
+  vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped, overview, activity, scanTable, branchRows, simulationControls, renderLogin, openDetail, focusMain, matchingScans, resultsList, refresh, selectFiltered, findingMarkup, advisoryLink, manifestLink, findingInstructions, copyInstructions, selectionSummary };`, sandbox);
+  return { ...sandbox.testApp, nodes, calls, events, windowEvents, timers, clipboard, document: sandbox.document,
     async tick(delay) {
       const entry = [...timers].find(([, timer]) => timer.delay === delay);
       assert.ok(entry, `No timer with delay ${delay}`);
@@ -57,6 +59,163 @@ test("demo connection is neutral even with legacy configured metadata; live stay
   assert.doesNotMatch(app.overview(), />Configurado</);
   app.state.meta.mode = "live";
   assert.match(app.overview(), /badge live">Configurado/);
+});
+
+test("results search finds advisory IDs and package names, including clean inventories", () => {
+  const app = harness(() => ({}));
+  app.state.scans = [
+    { id: "affected", status: "completed", advisory_ids: ["DEMO-0001"], package_names: ["fictional-demo-package"] },
+    { id: "clean", status: "completed", advisory_ids: [], package_names: ["fictional-demo-package"] },
+  ];
+  app.state.filter = "demo-0001";
+  assert.equal(app.matchingScans().length, 1);
+  app.state.filter = "fictional-demo-package";
+  assert.equal(app.matchingScans().length, 2);
+  app.state.statusFilter = "failed";
+  assert.equal(app.matchingScans().length, 0);
+  app.state.meta = { mode: "demo" };
+  assert.match(app.scanTable(app.state.scans), /DEMO-0001/);
+});
+
+const evidenceFinding = { advisory_id: "DEMO-0001", package_name: "fictional-demo-package", version: "1.0.0",
+  ecosystem: "npm", purl: "pkg:npm/fictional-demo-package@1.0.0", reachability: "unknown", fixed_versions: ["1.1.0"] };
+const evidenceScan = { status: "completed", source: "demo", repository: "fictional/repo", commit_sha: "a".repeat(40),
+  findings: [evidenceFinding], components: [{ name: evidenceFinding.package_name, version: "1.0.0",
+    ecosystem: "npm", purl: evidenceFinding.purl, manifest_path: "locks/package-lock.json" }] };
+
+test("evidence explains exact-version provenance honestly in demo and live modes", () => {
+  const app = harness(() => ({}));
+  app.state.meta = { mode: "demo" };
+  const html = app.findingMarkup(evidenceFinding, evidenceScan);
+  assert.match(html, /fictional-demo-package@1.0.0/);
+  assert.match(html, /locks\/package-lock.json/);
+  assert.match(html, /aaaaaaa/);
+  assert.match(html, /não houve consulta ao OSV/);
+  assert.match(html, /Não foi feita análise de fluxo\/chamadas; por isso o alcance é desconhecido/);
+  assert.match(html, /DEMO-0001 · fictício/);
+  assert.doesNotMatch(html, /href="https:/);
+  app.state.meta.mode = "live";
+  const live = app.findingMarkup({ ...evidenceFinding, advisory_id: "CVE-2024-12345" }, { ...evidenceScan, source: "github" });
+  assert.match(live, /Correspondência com o aviso por versão exata via OSV/);
+  assert.match(live, /https:\/\/github.com\/fictional\/repo\/blob\/a{40}\/locks\/package-lock.json/);
+  assert.match(live, /https:\/\/osv.dev\/vulnerability\/CVE-2024-12345/);
+  assert.match(live, /rel="noopener noreferrer"/);
+});
+
+test("evidence links only known safe destinations and instructions escape untrusted metadata", () => {
+  const app = harness(() => ({}));
+  app.state.meta = { mode: "live" };
+  for (const id of ["CVE-2024-12345", "GHSA-jfh8-c2jp-5v3q", "RUSTSEC-2024-0001"]) assert.match(app.advisoryLink(id), /https:\/\/osv.dev/);
+  for (const id of ['CVE-2024-"><img>', "javascript:alert(1)", "DEMO-0001"]) assert.doesNotMatch(app.advisoryLink(id), /<a /);
+  for (const path of ["../package-lock.json", "/package-lock.json"]) assert.doesNotMatch(app.manifestLink(path, { ...evidenceScan, source: "github" }), /<a /);
+  assert.doesNotMatch(app.manifestLink("package-lock.json", { ...evidenceScan, source: "github", repository: "evil.invalid/repo/path" }), /<a /);
+  const instruction = app.findingInstructions(evidenceFinding, evidenceScan);
+  assert.match(instruction, /fictional-demo-package 1.1.0 em locks\/package-lock.json; atualize, teste e execute nova análise/);
+  assert.match(app.findingInstructions({ ...evidenceFinding, fixed_versions: [] }, evidenceScan), /sem versão corrigida informada/);
+  assert.match(app.findingInstructions(evidenceFinding, { components: [] }), /manifesto não informado/);
+  const html = app.findingMarkup({ ...evidenceFinding, package_name: '"><img src=x onerror=x>' }, evidenceScan);
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /Copiar instruções/);
+});
+
+test("copy instructions uses the clipboard and announces a safe failure", async () => {
+  const app = harness(() => ({}));
+  assert.equal(await app.copyInstructions("instruções"), true);
+  assert.deepEqual(app.clipboard.values, ["instruções"]);
+  app.clipboard.writeText = async () => { throw new Error("private"); };
+  assert.equal(await app.copyInstructions("instruções"), false);
+  assert.match(app.nodes.get("#detail-announcement").textContent, /Selecione e copie/);
+  assert.doesNotMatch(app.nodes.get("#detail-announcement").textContent, /private/);
+});
+
+test("report retains header and footer close actions with sticky compact styling", async () => {
+  const app = harness(() => ({ body: evidenceScan }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "demo" } });
+  await app.openDetail("id");
+  const html = app.nodes.get("#detail-content").innerHTML;
+  assert.equal((html.match(/data-action="close-detail"/g) || []).length, 2);
+  assert.match(html, /1 achado\./);
+  const css = await readFile(new URL("../src/sca_reachability/static/styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.dialog-heading \{ position: sticky; top: 0/);
+  assert.match(css, /#detail-title \{ font-size: 22px/);
+});
+
+test("switching away and back keeps a numeric demo repository ID and saved target", async () => {
+  const app = harness(path => {
+    if (path === "/api/installations") return { body: { items: [{ id: 9001, status: "active" }] } };
+    if (path.endsWith("/repositories")) return { body: { items: [{ id: 9002 }, { id: 9003 }] } };
+    if (path.endsWith("/branches")) return { body: { items: [{ name: path.includes("/9003/") ? "main" : "release", selected: true }] } };
+    if (path.startsWith("/api/scans") || path === "/api/deliveries") return { body: { items: [] } };
+    return { body: {} };
+  });
+  Object.assign(app.state, { authenticated: true, meta: { mode: "demo" }, installation: 9001, repository: 9002, view: "branches" });
+  for (const value of ["9003", "9002"]) {
+    await app.events.get("change")({ target: { matches() { return false; }, dataset: { control: "repository" }, value } });
+  }
+  assert.equal(app.state.repository, 9002);
+  assert.equal(app.state.selected.has("release"), true);
+  assert.equal(app.state.selected.has("main"), false);
+  app.nodes.set("#simulation-branch", { value: "release" });
+  await app.events.get("click")({ target: { closest() { return { dataset: { action: "simulate" } }; } } });
+  const request = app.calls.find(call => call.path === "/api/demo/push");
+  assert.deepEqual(JSON.parse(request.options.body), { repository_id: 9002, branch: "release" });
+});
+
+test("silent results polling updates matching rows without touching the focused search or caret", async () => {
+  const app = harness(path => ({ body: path.startsWith("/api/scans") ? { items: [{ id: "new", status: "failed", branch: "stress/01" }] } : path === "/api/deliveries" ? { items: [] } : {} }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "demo" }, view: "results", installation: 1, repository: 2, filter: "stress/01" });
+  const search = { value: "stress/01", selectionStart: 3, selectionEnd: 3 };
+  app.document.activeElement = search;
+  app.nodes.set("#results-search", search);
+  app.nodes.set("#main", { contains() { return true; } });
+  await app.refresh({ full: false, silent: true });
+  assert.match(app.nodes.get("#results-list").innerHTML, /Falhou/);
+  assert.equal(app.nodes.get("#results-search"), search);
+  assert.equal(search.selectionStart, 3);
+  assert.equal(app.state.filter, "stress/01");
+  assert.ok([...app.timers.values()].some(timer => timer.delay === 15000));
+});
+
+test("bulk selection respects the global limit, and the 21st checkbox is rejected inline", async () => {
+  const app = harness(() => ({}));
+  const branches = Array.from({ length: 23 }, (_, i) => ({ name: "stress/" + i, selected: false }));
+  Object.assign(app.state, { meta: { mode: "demo" }, branches, selected: new Set(["hidden"]), filter: "stress/" });
+  app.selectFiltered();
+  assert.equal(app.state.selected.size, 20);
+  assert.equal(app.state.selected.has("hidden"), true);
+  assert.match(app.selectionSummary(), /20 de 20/);
+  const target = { checked: true, dataset: { branch: "stress/22" }, matches() { return true; } };
+  await app.events.get("change")({ target });
+  assert.equal(target.checked, false);
+  assert.equal(app.state.selected.size, 20);
+  assert.match(app.nodes.get("#selection-error").textContent, /Limite de 20/);
+  await app.events.get("click")({ target: { closest() { return { dataset: { action: "clear-selection" } }; } } });
+  assert.equal(app.state.selected.size, 0);
+});
+
+test("known validation errors are localized; unknown diagnostics never reach the UI", async () => {
+  const known = harness(() => ({ status: 400, body: { detail: "Select at most 20 distinct existing branch names." } }));
+  await assert.rejects(known.api("/api/example"), /no máximo 20/);
+  const unknown = harness(() => ({ status: 400, body: { detail: "private secret" } }));
+  await assert.rejects(unknown.api("/api/example"), error => !error.message.includes("private") && /validar/.test(error.message));
+});
+
+test("clearing an empty results search restores the branch-selection shortcut", () => {
+  const app = harness(() => ({}));
+  app.state.meta = { mode: "demo" };
+  app.state.filter = "missing";
+  assert.match(app.resultsList(), /corresponde aos filtros/);
+  app.events.get("input")({ target: { id: "results-search", value: "" } });
+  assert.match(app.nodes.get("#results-list").innerHTML, /href="#branches"/);
+});
+
+test("empty login token receives inline Portuguese validation without a request", async () => {
+  const app = harness(() => ({}));
+  const field = { value: "", focus(options) { this.options = options; } };
+  await app.events.get("submit")({ preventDefault() {}, target: { id: "login-form", elements: { token: field }, querySelector() { return {}; } } });
+  assert.equal(app.calls.length, 0);
+  assert.match(app.nodes.get("#login-error").textContent, /Informe o token/);
+  assert.equal(field.options.preventScroll, true);
 });
 
 test("activity separates webhook outcome from the linked scan state and handles no scan", () => {
@@ -134,8 +293,19 @@ test("failed or unavailable reports never poll or present empty calculated resul
     app.state.authenticated = true;
     await app.openDetail("scan");
     assert.equal(app.timers.size, 0);
-    assert.doesNotMatch(app.nodes.get("#detail-content").innerHTML, /Componentes analisados|Nenhum achado disponível/);
+    assert.doesNotMatch(app.nodes.get("#detail-content").innerHTML, /Componentes analisados|Nenhum achado disponível|APOIO À LEITURA/);
   }
+});
+
+test("failed report retry posts the scoped scan ID and replaces failure with pending progress", async () => {
+  const app = harness(path => ({ body: path.endsWith("/retry") ? { scan_id: "failed/scan" } : { status: "queued" } }));
+  app.state.authenticated = true;
+  const target = { dataset: { action: "retry-scan", id: "failed/scan" } };
+  await app.events.get("click")({ target: { closest() { return target; } } });
+  assert.equal(app.calls[0].path, "/api/scans/failed%2Fscan/retry");
+  assert.equal(app.calls[0].options.method, "POST");
+  assert.match(app.nodes.get("#detail-content").innerHTML, /Resultados ainda não calculados/);
+  assert.equal(target.disabled, false);
 });
 
 test("demo login shows the single-line token hint and quick entry only in demo", async () => {
@@ -174,6 +344,8 @@ test("a rejected save retains the unsaved selection instead of claiming persiste
   assert.equal(app.state.branches[0].selected, false);
   assert.equal(app.state.selected.has("main"), true);
   assert.match(app.nodes.get("#notification").textContent, /Não foi possível/);
+  assert.match(app.state.saveError, /Não foi possível/);
+  assert.match(app.nodes.get("#main").innerHTML, /id="save-error"[^>]*>Não foi possível/);
   assert.equal(app.state.busy, false);
 });
 

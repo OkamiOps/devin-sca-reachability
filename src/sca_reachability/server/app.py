@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import json
+import time
 from pathlib import Path
 import uuid
 
@@ -362,7 +363,24 @@ def create_app(
                 f"SELECT s.* FROM scans s WHERE {predicate} ORDER BY s.created_at DESC, s.rowid DESC LIMIT 100",
                 params,
             ).fetchall()
-        return {"items": [{key: row[key] for key in SCAN_FIELDS} for row in rows]}
+            results = [
+                {**{key: row[key] for key in SCAN_FIELDS}, "advisory_ids": [], "package_names": []}
+                for row in rows
+            ]
+            if results:
+                by_id = {item["id"]: item for item in results}
+                placeholders = ",".join("?" for _ in results)
+                for item in connection.execute(
+                    f"""SELECT DISTINCT scan_id, advisory_id FROM scan_findings
+                    WHERE scan_id IN ({placeholders}) ORDER BY advisory_id""", list(by_id),
+                ):
+                    by_id[item["scan_id"]]["advisory_ids"].append(item["advisory_id"])
+                for item in connection.execute(
+                    f"""SELECT DISTINCT scan_id, name FROM scan_components
+                    WHERE scan_id IN ({placeholders}) ORDER BY name""", list(by_id),
+                ):
+                    by_id[item["scan_id"]]["package_names"].append(item["name"])
+        return {"items": results}
 
     @app.get("/api/scans/{scan_id}", dependencies=[Depends(operator)])
     def scan_details(scan_id: str):
@@ -423,6 +441,38 @@ def create_app(
                 """, allowed,
             ).fetchall()
         return {"items": [dict(row) for row in rows]}
+
+    @app.post("/api/scans/{scan_id}/retry", dependencies=[Depends(mutation)], status_code=202)
+    def retry_scan(scan_id: str):
+        predicate, params = scope_predicate()
+        with database.transaction() as connection:
+            scan = connection.execute(
+                f"SELECT s.* FROM scans s WHERE s.id = ? AND {predicate}",
+                [scan_id, *params],
+            ).fetchone()
+            if not scan:
+                raise HTTPException(404, "Scan not found")
+            if not authorized_scope(connection, settings, scan["installation_id"],
+                                    scan["repository_id"], scan["branch"]):
+                raise ServiceError(400, "The branch is not selected for monitoring.")
+            if scan["status"] != "failed":
+                raise HTTPException(409, "Only failed scans can be retried")
+            for table in ("scan_components", "scan_findings", "scan_warnings", "jobs"):
+                connection.execute(f"DELETE FROM {table} WHERE scan_id = ?", (scan_id,))
+            connection.execute(
+                """UPDATE scans SET status = 'queued', completed_at = NULL, error = NULL,
+                component_count = 0, finding_count = 0,
+                explanation_json = '{"status":"disabled","text":null,"source":null}' WHERE id = ?""",
+                (scan_id,),
+            )
+            now = iso_now()
+            connection.execute(
+                """INSERT INTO jobs(scan_id, installation_id, repository_id, branch, commit_sha,
+                status, available_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)""",
+                (scan_id, scan["installation_id"], scan["repository_id"], scan["branch"],
+                 scan["commit_sha"], time.time(), now, now),
+            )
+        return {"scan_id": scan_id, "status": "queued"}
 
     @app.get("/api/dashboard", dependencies=[Depends(operator)])
     def dashboard():
