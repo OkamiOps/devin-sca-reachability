@@ -235,6 +235,22 @@ class PublicByURLTests(unittest.TestCase):
             branches = client.get(scope+'/branches', headers=headers).json()['items']
             self.assertEqual([b['name'] for b in branches if b['selected']], ['release'])
 
+    def test_sync_does_not_monitor_a_new_default_beyond_twenty_branches(self):
+        headers = {'Authorization': 'Bearer '+'t'*32}
+        for selected_count in (19, 20):
+            with self.subTest(selected_count=selected_count), tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
+                repo = client.post('/api/public/repositories', json={'url': 'a/b'}, headers=headers).json()['repository']
+                with client.app.state.database.transaction() as connection:
+                    for index in range(selected_count - 1):
+                        connection.execute("INSERT INTO branches VALUES (9003, ?, ?, 1, 'now')", (repo['id'], f'branch{index}'))
+                branches = {'main': 'a'*40, 'new-default': 'b'*40, **{f'branch{i}': 'a'*40 for i in range(selected_count - 1)}}
+                with patch.object(client.app.state.worker.github, '_refs', return_value=(branches, 'new-default')):
+                    response = client.post('/api/installations/sync', headers=headers)
+                self.assertEqual(response.status_code, 200, response.text)
+                with client.app.state.database.connection() as connection:
+                    self.assertEqual(connection.execute('SELECT count(*) FROM branches WHERE selected = 1').fetchone()[0], 20)
+                    self.assertEqual(connection.execute("SELECT selected FROM branches WHERE name = 'new-default'").fetchone()[0], int(selected_count == 19))
+
     def test_public_scan_cannot_select_a_twenty_first_monitored_branch(self):
         headers = {'Authorization': 'Bearer '+'t'*32}
         with tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:

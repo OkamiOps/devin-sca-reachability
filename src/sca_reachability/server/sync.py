@@ -181,6 +181,13 @@ def _apply(database: Database, settings: Settings, installations: list[dict], *,
                             (installation_id, repository_id, branch_row["name"]),
                         )
                 for branch in repository["branches"]:
+                    select_default = (
+                        settings.mode == 'public' and branch == repository['default_branch']
+                        and connection.execute(
+                            'SELECT count(*) FROM branches WHERE installation_id = ? AND repository_id = ? AND selected = 1',
+                            (installation_id, repository_id),
+                        ).fetchone()[0] < 20
+                    )
                     connection.execute(
                         """
                         INSERT OR IGNORE INTO branches(
@@ -188,7 +195,7 @@ def _apply(database: Database, settings: Settings, installations: list[dict], *,
                         ) VALUES (?, ?, ?, ?, ?)
                         """,
                         (installation_id, repository_id, branch,
-                         int(settings.mode == 'public' and branch == repository['default_branch']), now),
+                         int(select_default), now),
                     )
                     connection.execute(
                         """
