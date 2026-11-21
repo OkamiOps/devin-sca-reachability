@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+import re
 import tempfile
 import time
 import unittest
@@ -395,6 +396,120 @@ class ServerTests(unittest.TestCase):
         with app.state.database.transaction() as connection:
             connection.execute("UPDATE sessions SET expires_at = 0")
         self.assertEqual(client.get("/api/installations").status_code, 401)
+
+    def test_demo_login_rejections_log_safe_categories_with_correlated_headers(self):
+        _, client = self.client(demo=True)
+        cookie_canary = "cookie-canary"
+        marker_canary = "marker-canary"
+        origin_canary = "https://origin-canary.invalid"
+        token_canary = "token-canary"
+        cases = (
+            (
+                "request_marker_missing",
+                {"Origin": "http://testserver", "Cookie": f"sca_session={cookie_canary}"},
+                "Request validation failed",
+                403,
+            ),
+            (
+                "request_marker_invalid",
+                {
+                    "Origin": "http://testserver",
+                    "X-SCA-Request": marker_canary,
+                    "Cookie": f"sca_session={cookie_canary}",
+                },
+                "Request validation failed",
+                403,
+            ),
+            (
+                "origin_missing",
+                {"X-SCA-Request": "1", "Cookie": f"sca_session={cookie_canary}"},
+                "Origin validation failed",
+                403,
+            ),
+            (
+                "origin_malformed",
+                {
+                    "Origin": origin_canary + "/path",
+                    "X-SCA-Request": "1",
+                    "Cookie": f"sca_session={cookie_canary}",
+                },
+                "Origin validation failed",
+                403,
+            ),
+            (
+                "origin_mismatch",
+                {
+                    "Origin": origin_canary,
+                    "X-SCA-Request": "1",
+                    "Cookie": f"sca_session={cookie_canary}",
+                },
+                "Origin validation failed",
+                403,
+            ),
+            (
+                "token_rejected",
+                {
+                    "Origin": "http://testserver",
+                    "X-SCA-Request": "1",
+                    "Cookie": f"sca_session={cookie_canary}",
+                },
+                "Authentication required",
+                401,
+            ),
+        )
+        diagnostic_ids = []
+        with self.assertLogs("sca_reachability.server.security", level="WARNING") as captured:
+            for category, headers, detail, status in cases:
+                response = client.post(
+                    "/api/session", json={"token": token_canary}, headers=headers
+                )
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(response.json()["detail"], detail)
+                diagnostic_id = response.headers.get("X-SCA-Diagnostic-ID")
+                self.assertRegex(diagnostic_id or "", re.compile(r"^[0-9a-f]{32}$"))
+                self.assertNotIn(diagnostic_id, response.text)
+                self.assertIn(f"category={category}", captured.output[-1])
+                self.assertIn(f"correlation_id={diagnostic_id}", captured.output[-1])
+                diagnostic_ids.append(diagnostic_id)
+        self.assertEqual(len(set(diagnostic_ids)), len(cases))
+        self.assertEqual(len(captured.records), len(cases))
+        for sensitive_value in (
+            cookie_canary, marker_canary, origin_canary, token_canary,
+        ):
+            self.assertNotIn(sensitive_value, "\n".join(captured.output))
+
+        with self.assertNoLogs("sca_reachability.server.security", level="WARNING"):
+            valid = client.post(
+                "/api/session", json={"token": "local-demo"}, headers=CSRF
+            )
+        self.assertEqual(valid.status_code, 200)
+        self.assertEqual(valid.json(), {"authenticated": True})
+        self.assertNotIn("X-SCA-Diagnostic-ID", valid.headers)
+
+    def test_live_login_has_no_demo_diagnostic_logs_or_headers(self):
+        _, client = self.client(github=False)
+        cases = (
+            ({"Origin": "http://testserver"}, "token-canary", 403),
+            (
+                {"Origin": "https://foreign.invalid", "X-SCA-Request": "1"},
+                "token-canary",
+                403,
+            ),
+            (CSRF, "token-canary", 401),
+        )
+        with self.assertNoLogs("sca_reachability.server.security", level="WARNING"):
+            for headers, token, status in cases:
+                response = client.post(
+                    "/api/session", json={"token": token}, headers=headers
+                )
+                self.assertEqual(response.status_code, status)
+                self.assertNotIn("X-SCA-Diagnostic-ID", response.headers)
+            valid = client.post(
+                "/api/session", json={"token": TOKEN}, headers=CSRF
+            )
+        self.assertEqual(valid.status_code, 200)
+        self.assertEqual(valid.json(), {"authenticated": True})
+        self.assertNotIn("X-SCA-Diagnostic-ID", valid.headers)
 
     def test_live_unconfigured_starts_and_fails_closed(self):
         _, client = self.client(github=False)

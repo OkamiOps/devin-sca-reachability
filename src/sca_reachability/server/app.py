@@ -25,6 +25,7 @@ from sca_reachability.server.security import (
     RequestBodyLimitMiddleware,
     authenticate_request,
     create_session,
+    demo_login_rejection_headers,
     require_mutation_protection,
     revoke_session,
     validate_login_request,
@@ -202,7 +203,11 @@ def create_app(
         if expected is None:
             raise ServiceError(503, "A dashboard operator token of at least 32 characters is required.")
         if not isinstance(token, str) or len(token) > 4096 or not hmac.compare_digest(token.encode(), expected.encode()):
-            raise HTTPException(401, "Authentication required")
+            raise HTTPException(
+                401,
+                "Authentication required",
+                headers=demo_login_rejection_headers(settings, "token_rejected"),
+            )
         session = create_session(database)
         response = JSONResponse({"authenticated": True})
         response.set_cookie(
