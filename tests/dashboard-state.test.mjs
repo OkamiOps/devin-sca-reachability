@@ -132,7 +132,7 @@ test("public verification cannot switch scope with an unsaved branch draft, incl
   app.state.publicFlow.url = "a/b";
   await app.verifyPublicRepository();
   assert.equal(app.calls.length, 0); assert.equal(app.state.repository, 1);
-  assert.match(app.nodes.get("#notice").textContent, /Salve ou descarte/);
+  assert.match(app.nodes.get("#notification").textContent, /Salve ou descarte/);
   app.state.selected = new Set(["main"]);
   const verification = app.verifyPublicRepository();
   app.state.selected = new Set(["release"]);
