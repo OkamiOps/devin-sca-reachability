@@ -10,6 +10,8 @@ from sca_reachability.server.github import DemoGitHubAdapter, GitHubAdapter
 from sca_reachability.server.manifests import inventory_manifests
 from sca_reachability.server.osv_client import Advisory, OsvAdapter
 from sca_reachability.server.service import authorized_scope
+from sca_reachability.server.sources import collect_sources, reachability_for
+from sca_reachability.static_reachability import SourceCoverage
 
 
 MAX_ATTEMPTS = 3
@@ -139,8 +141,10 @@ class ScanWorker:
         )
         heartbeat.start()
         try:
-            inventory, advisories_by_component, demo_sources = self._analyze(job_data)
-            self._save_results(job_data, inventory, advisories_by_component, demo_sources)
+            inventory, advisories_by_component, demo_sources, reachability = self._analyze(job_data)
+            self._save_results(
+                job_data, inventory, advisories_by_component, demo_sources, reachability
+            )
         except RetryableError:
             self._retry_or_fail(job_data)
         except ScanError as error:
@@ -230,7 +234,12 @@ class ScanWorker:
         ):
             raise ScanError("OSV returned malformed advisory data.")
         self._ensure_authorized(job)
-        return inventory, advisories, demo_sources
+        coverage = SourceCoverage()
+        if any(advisories):
+            coverage = collect_sources(tree, lambda blob_sha: self._read_blob(job, blob_sha))
+        reachability = reachability_for(inventory.components, advisories, coverage)
+        self._ensure_authorized(job)
+        return inventory, advisories, demo_sources, reachability
 
     def _read_blob(self, job: dict, blob_sha: str) -> bytes:
         self._ensure_authorized(job)
@@ -242,26 +251,34 @@ class ScanWorker:
         )
 
     @staticmethod
-    def _explanation_report(inventory, advisories_by_component) -> dict:
+    def _explanation_report(inventory, advisories_by_component, reachability=None) -> dict:
         findings = []
-        for component, advisories in zip(
-            inventory.components, advisories_by_component, strict=True
+        if reachability is None:
+            reachability = [[None] * len(items) for items in advisories_by_component]
+        for component, advisories, results in zip(
+            inventory.components, advisories_by_component, reachability, strict=True
         ):
-            for advisory in advisories:
+            for advisory, result in zip(advisories, results, strict=True):
                 findings.append(
                     {
                         "advisory_id": advisory.id,
                         "severity": advisory.severity,
-                        "reachability": "unknown",
+                        "reachability": result.status.value if result else "unknown",
                         "ecosystem": component.ecosystem,
                         "purl": component.purl,
                     }
                 )
         return {"findings": findings}
 
-    def _save_results(self, job: dict, inventory, advisories_by_component, demo_sources=()) -> None:
+    def _save_results(
+        self, job: dict, inventory, advisories_by_component, demo_sources=(), reachability=None
+    ) -> None:
         self._ensure_authorized(job)
-        report = self._explanation_report(inventory, advisories_by_component)
+        if reachability is None:
+            reachability = reachability_for(
+                inventory.components, advisories_by_component, SourceCoverage()
+            )
+        report = self._explanation_report(inventory, advisories_by_component, reachability)
         explanation = explain_report(report, provider=self.ai_provider)
         now = iso_now()
         component_count = len(inventory.components)
@@ -305,10 +322,10 @@ class ScanWorker:
                     ),
                 )
             finding_ordinal = 0
-            for component, advisories in zip(
-                inventory.components, advisories_by_component, strict=True
+            for component, advisories, results in zip(
+                inventory.components, advisories_by_component, reachability, strict=True
             ):
-                for advisory in advisories:
+                for advisory, result in zip(advisories, results, strict=True):
                     fixed_versions = [
                         version[:128]
                         for version in advisory.fixed_versions[:100]
@@ -324,8 +341,10 @@ class ScanWorker:
                         """
                         INSERT INTO scan_findings(
                             scan_id, ordinal, id, package_name, version, ecosystem, purl,
-                            advisory_id, summary, severity, fixed_versions_json, reachability
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown')
+                            advisory_id, summary, severity, fixed_versions_json, reachability,
+                            reachability_reason, reachability_evidence_json,
+                            reachability_analysis_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             job["scan_id"],
@@ -339,6 +358,11 @@ class ScanWorker:
                             summary,
                             severity,
                             json.dumps(fixed_versions, ensure_ascii=False),
+                            result.status.value,
+                            result.reason[:2000],
+                            json.dumps([item.to_dict() for item in result.evidence],
+                                       ensure_ascii=False),
+                            json.dumps(result.analysis_dict(), ensure_ascii=False),
                         ),
                     )
                     finding_ordinal += 1

@@ -364,7 +364,8 @@ def create_app(
                 params,
             ).fetchall()
             results = [
-                {**{key: row[key] for key in SCAN_FIELDS}, "advisory_ids": [], "package_names": []}
+                {**{key: row[key] for key in SCAN_FIELDS}, "advisory_ids": [], "package_names": [],
+                 "reachability_counts": {"reachable": 0, "unreachable": 0, "unknown": 0}}
                 for row in rows
             ]
             if results:
@@ -375,6 +376,11 @@ def create_app(
                     WHERE scan_id IN ({placeholders}) ORDER BY advisory_id""", list(by_id),
                 ):
                     by_id[item["scan_id"]]["advisory_ids"].append(item["advisory_id"])
+                for item in connection.execute(
+                    f"""SELECT scan_id, reachability, COUNT(*) AS total FROM scan_findings
+                    WHERE scan_id IN ({placeholders}) GROUP BY scan_id, reachability""", list(by_id),
+                ):
+                    by_id[item["scan_id"]]["reachability_counts"][item["reachability"]] = item["total"]
                 for item in connection.execute(
                     f"""SELECT DISTINCT scan_id, name FROM scan_components
                     WHERE scan_id IN ({placeholders}) ORDER BY name""", list(by_id),
@@ -403,12 +409,19 @@ def create_app(
             for item in connection.execute(
                 """
                 SELECT id, package_name, version, ecosystem, purl, advisory_id,
-                    summary, severity, fixed_versions_json, reachability
+                    summary, severity, fixed_versions_json, reachability,
+                    reachability_reason, reachability_evidence_json, reachability_analysis_json
                 FROM scan_findings WHERE scan_id = ? ORDER BY ordinal
                 """, (scan_id,),
             ).fetchall():
                 finding = dict(item)
                 finding["fixed_versions"] = json.loads(finding.pop("fixed_versions_json"))
+                finding["reachability_evidence"] = json.loads(
+                    finding.pop("reachability_evidence_json") or "[]"
+                )
+                finding["reachability_analysis"] = json.loads(
+                    finding.pop("reachability_analysis_json") or "{}"
+                )
                 findings.append(finding)
             result["findings"] = findings
             result["warnings"] = [item["warning"] for item in connection.execute(

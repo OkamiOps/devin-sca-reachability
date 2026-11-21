@@ -22,6 +22,7 @@ def build_report(result: AnalysisResult) -> dict[str, Any]:
             "reachability": {
                 "status": finding.reachability.status.value,
                 "reason": finding.reachability.reason,
+                "evidence": [item.to_dict() for item in finding.reachability.evidence],
             },
         }
         for finding in result.findings

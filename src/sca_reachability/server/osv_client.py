@@ -24,6 +24,7 @@ class Advisory:
     summary: str | None
     severity: str | None
     fixed_versions: tuple[str, ...]
+    symbols: tuple[str, ...] = ()
 
 
 class OsvAdapter(Protocol):
@@ -183,6 +184,22 @@ class OsvClient:
                     fixed = event.get("fixed") if isinstance(event, dict) else None
                     if isinstance(fixed, str) and fixed and fixed not in fixed_versions:
                         fixed_versions.append(fixed)
+        symbols = []
+        for item in matching:
+            specific = item.get("ecosystem_specific")
+            if not isinstance(specific, dict):
+                continue
+            names = specific.get("affected_functions")
+            names = list(names) if isinstance(names, list) else []
+            imports = specific.get("imports")
+            for entry in imports if isinstance(imports, list) else []:
+                if isinstance(entry, dict) and isinstance(entry.get("symbols"), list):
+                    names += entry["symbols"]
+            for name in names:
+                if isinstance(name, str) and name.strip():
+                    symbol = re.split(r"[.:#]", name.strip())[-1][:128]
+                    if symbol and symbol not in symbols:
+                        symbols.append(symbol)
         summary = details.get("summary")
         if not isinstance(summary, str) or not summary:
             summary = fallback_summary
@@ -191,6 +208,7 @@ class OsvClient:
             summary=summary,
             severity=None,
             fixed_versions=tuple(fixed_versions),
+            symbols=tuple(symbols[:50]),
         )
 
     def query(self, components: Sequence[LockedComponent]) -> list[list[Advisory]]:
@@ -222,27 +240,38 @@ class OsvClient:
         return results
 
 
+DEMO_ADVISORIES = {
+    ("npm", "fictional-demo-package", "1.0.0"): Advisory(
+        id="DEMO-0001",
+        summary="Aviso sintético de demonstração; não representa uma vulnerabilidade real.",
+        severity=None,
+        fixed_versions=("1.1.0",),
+        symbols=("renderTemplate",),
+    ),
+    ("PyPI", "fictional-yaml-parser", "2.0.0"): Advisory(
+        id="DEMO-0002",
+        summary="Aviso sintético: unsafe_load fictício aceita objetos arbitrários; não é real.",
+        severity=None,
+        fixed_versions=("2.0.1",),
+        symbols=("unsafe_load",),
+    ),
+    ("npm", "fictional-plugin-host", "0.3.0"): Advisory(
+        id="DEMO-0003",
+        summary="Aviso sintético sem função vulnerável identificada; não é real.",
+        severity=None,
+        fixed_versions=("0.4.0",),
+    ),
+}
+
+
 class DemoOsvAdapter:
     def query(self, components: Sequence[LockedComponent]) -> list[list[Advisory]]:
         results = []
         for component in components:
-            if (
-                component.name == "fictional-demo-package"
-                and component.ecosystem == "npm"
-                and component.version == "1.0.0"
-            ):
-                results.append(
-                    [
-                        Advisory(
-                            id="DEMO-0001",
-                            summary="Aviso sintético de demonstração; não representa uma vulnerabilidade real.",
-                            severity=None,
-                            fixed_versions=("1.1.0",),
-                        )
-                    ]
-                )
-            else:
-                results.append([])
+            advisory = DEMO_ADVISORIES.get(
+                (component.ecosystem, component.name, component.version)
+            )
+            results.append([advisory] if advisory else [])
         return results
 
     def close(self) -> None:

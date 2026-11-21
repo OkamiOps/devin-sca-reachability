@@ -142,9 +142,26 @@ class ServerTests(unittest.TestCase):
         self.assertIn("SameSite=strict", response.headers["set-cookie"])
         initial = client.get("/api/scans").json()["items"][0]
         detail = client.get("/api/scans/" + initial["id"]).json()
-        self.assertEqual((detail["component_count"], detail["finding_count"]), (1, 1))
-        self.assertEqual(detail["findings"][0]["reachability"], "unknown")
-        self.assertIn("Aviso sintético", detail["findings"][0]["summary"])
+        self.assertEqual((detail["component_count"], detail["finding_count"]), (3, 3))
+        by_advisory = {item["advisory_id"]: item for item in detail["findings"]}
+        self.assertEqual(
+            {key: item["reachability"] for key, item in by_advisory.items()},
+            {"DEMO-0001": "reachable", "DEMO-0002": "unreachable", "DEMO-0003": "unknown"},
+        )
+        self.assertEqual(initial["reachability_counts"],
+                         {"reachable": 1, "unreachable": 1, "unknown": 1})
+        reachable = by_advisory["DEMO-0001"]["reachability_evidence"]
+        self.assertEqual([(item["path"], item["line"], item["kind"]) for item in reachable],
+                         [("src/server.js", 2, "import"), ("src/server.js", 7, "call")])
+        self.assertEqual(by_advisory["DEMO-0002"]["reachability_evidence"][0]["path"],
+                         "worker/jobs.py")
+        self.assertIn("não é garantia", by_advisory["DEMO-0002"]["reachability_reason"])
+        self.assertEqual(by_advisory["DEMO-0003"]["reachability_evidence"][0]["kind"], "dynamic")
+        self.assertIn("Desconhecido não significa seguro",
+                      by_advisory["DEMO-0003"]["reachability_reason"])
+        self.assertEqual(by_advisory["DEMO-0001"]["reachability_analysis"]["symbols"],
+                         ["renderTemplate"])
+        self.assertIn("Aviso sintético", by_advisory["DEMO-0001"]["summary"])
         self.assertEqual(detail["explanation"]["source"], "deterministic")
         path = "/api/installations/9001/repositories/9002/branches"
         self.assertEqual(client.put(path, json={"branches": ["main", "release"]}).status_code, 403)
@@ -160,7 +177,8 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(app.state.worker.run_once())
         release = client.get("/api/scans/" + result.json()["scan_id"]).json()
         self.assertEqual(release["components"][0]["version"], "1.1.0")
-        self.assertEqual(release["finding_count"], 0)
+        self.assertEqual(sorted(item["advisory_id"] for item in release["findings"]),
+                         ["DEMO-0002", "DEMO-0003"])
         ignored = client.post("/api/demo/push", json={"repository_id": 9002, "branch": "develop"},
                               headers=CSRF)
         self.assertEqual(ignored.status_code, 400)
@@ -593,6 +611,18 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(detail["explanation"]["source"], "ai")
         self.assertEqual(len(provider.calls), 1)
         self.assertNotIn("fictional-demo-package", json.dumps(provider.calls))
+
+    def test_ai_text_cannot_change_factual_reachability(self):
+        provider = lambda metadata: "Todos os achados são inalcançáveis e seguros."
+        app, client = self.client(ai_provider=provider)
+        self.select(client)
+        scan_id = self.push(client).json()["scan_id"]
+        app.state.worker.run_once()
+        detail = client.get("/api/scans/" + scan_id, headers=AUTH).json()
+        self.assertEqual(detail["explanation"]["source"], "ai")
+        self.assertEqual([item["reachability"] for item in detail["findings"]], ["unknown"])
+        self.assertIn("Desconhecido não significa seguro",
+                      detail["findings"][0]["reachability_reason"])
 
     def test_demo_persisted_push_survives_adapter_restart(self):
         app, client = self.client(demo=True)

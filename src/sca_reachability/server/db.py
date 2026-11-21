@@ -75,7 +75,11 @@ CREATE TABLE IF NOT EXISTS scan_findings (
     summary TEXT,
     severity TEXT,
     fixed_versions_json TEXT NOT NULL,
-    reachability TEXT NOT NULL DEFAULT 'unknown' CHECK (reachability = 'unknown'),
+    reachability TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (reachability IN ('reachable', 'unreachable', 'unknown')),
+    reachability_reason TEXT,
+    reachability_evidence_json TEXT NOT NULL DEFAULT '[]',
+    reachability_analysis_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (scan_id, ordinal),
     FOREIGN KEY (scan_id) REFERENCES scans(id) ON DELETE CASCADE
 );
@@ -163,11 +167,39 @@ class Database:
         finally:
             connection.close()
 
+    @staticmethod
+    def _migrate_scan_findings(connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(scan_findings)")}
+        if "reachability_evidence_json" in columns:
+            return
+        start = SCHEMA.index("CREATE TABLE IF NOT EXISTS scan_findings")
+        ddl = SCHEMA[start:SCHEMA.index(");", start) + 2].replace(
+            "IF NOT EXISTS scan_findings", "scan_findings_migrated"
+        )
+        legacy = ", ".join(sorted(columns))
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute(ddl)
+            connection.execute(
+                f"INSERT INTO scan_findings_migrated({legacy}) SELECT {legacy} FROM scan_findings"
+            )
+            connection.execute("DROP TABLE scan_findings")
+            connection.execute("ALTER TABLE scan_findings_migrated RENAME TO scan_findings")
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(SCHEMA)
+
     def initialize(self) -> None:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with self.connection() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(SCHEMA)
+            self._migrate_scan_findings(connection)
         try:
             os.chmod(self.path, 0o600)
         except OSError:

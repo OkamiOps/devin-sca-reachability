@@ -340,6 +340,35 @@ class GitHubAppClient:
         return content
 
 
+DEMO_SOURCE_FILES = {
+    "requirements.txt": "fictional-yaml-parser==2.0.0\n",
+    "src/server.js": (
+        "import express from \"express\";\n"
+        "import { renderTemplate } from \"fictional-demo-package\";\n"
+        "\n"
+        "const app = express();\n"
+        "\n"
+        "app.get(\"/welcome\", (request, response) => {\n"
+        "  const html = renderTemplate(\"welcome\", { name: request.query.name });\n"
+        "  response.send(html);\n"
+        "});\n"
+    ),
+    "src/plugins.js": (
+        "// Plugins are resolved at runtime from the deployment configuration.\n"
+        "export function loadPlugin(name) {\n"
+        "  return require(`fictional-plugin-host/plugins/${name}`);\n"
+        "}\n"
+    ),
+    "worker/jobs.py": (
+        "import fictional_yaml_parser as yaml_parser\n"
+        "\n"
+        "\n"
+        "def load_job(document: str) -> dict:\n"
+        "    return yaml_parser.safe_load(document)\n"
+    ),
+}
+
+
 class DemoGitHubAdapter:
     installation_id = 9001
     repository_id = 9002
@@ -399,30 +428,26 @@ class DemoGitHubAdapter:
         if branch is None:
             raise ScanError("Demo commit is not available.")
         version = "1.1.0" if branch == "release" else "1.0.0"
-        content = json.dumps(
+        lockfile = json.dumps(
             {
                 "name": "fictional-demo-app",
                 "lockfileVersion": 3,
                 "packages": {
                     "": {"name": "fictional-demo-app", "version": "1.0.0"},
                     "node_modules/fictional-demo-package": {"version": version},
+                    "node_modules/fictional-plugin-host": {"version": "0.3.0"},
                 },
             },
             separators=(",", ":"),
-        ).encode("utf-8")
-        blob_sha = hashlib.sha1(content).hexdigest()
-        self._blobs[blob_sha] = content
-        return (
-            [
-                {
-                    "path": "package-lock.json",
-                    "mode": "100644",
-                    "type": "blob",
-                    "sha": blob_sha,
-                }
-            ],
-            False,
         )
+        files = {"package-lock.json": lockfile, **DEMO_SOURCE_FILES}
+        tree = []
+        for path, text in files.items():
+            content = text.encode("utf-8")
+            blob_sha = hashlib.sha1(content).hexdigest()
+            self._blobs[blob_sha] = content
+            tree.append({"path": path, "mode": "100644", "type": "blob", "sha": blob_sha})
+        return tree, False
 
     def get_blob(
         self, installation_id: int, repository_id: int, repository: str, blob_sha: str
