@@ -50,11 +50,12 @@ class PublicRepositories:
         with self.lock:
             if len(self.github.repositories) > MAX_REPOSITORIES:
                 raise PublicError('repository_cap', 'Limite de 25 repositórios atingido.', 409)
-            records, unavailable = [], []
+            records, unavailable, failures = [], [], []
             for repo_id, name in self.github.repositories.items():
                 try:
                     branches, default = self.github._refs(name)
                 except ScanError as error:
+                    failures.append(error)
                     if getattr(error, 'code', None) == 'private_or_missing':
                         unavailable.append(repo_id)
                     continue
@@ -65,4 +66,7 @@ class PublicRepositories:
                 for repo_id in unavailable:
                     connection.execute('UPDATE repositories SET active = 0 WHERE installation_id = 9003 AND id = ?', (repo_id,))
                     cancel_scope(connection, installation_id=9003, repository_id=repo_id)
+            if failures and not records:
+                error = failures[0]
+                raise PublicError(getattr(error, 'code', 'network'), 'Nenhum repositório público pôde ser atualizado. ' + str(error), getattr(error, 'status', 503))
             return _read_installations(self.database, self.settings)

@@ -167,6 +167,20 @@ class PublicByURLTests(unittest.TestCase):
             branches = client.get(f"/api/installations/9003/repositories/{healthy['id']}/branches", headers=headers).json()['items']
             self.assertEqual({b['name'] for b in branches}, {'main', 'release'})
 
+    def test_sync_reports_failure_when_every_preset_lookup_fails(self):
+        headers = {'Authorization': 'Bearer '+'t'*32}
+        for code, status in (('private_or_missing', 404), ('network', 503)):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
+                self.assertEqual(client.post('/api/installations/sync', headers=headers).status_code, 200)
+                adapter = client.app.state.worker.github
+                adapter.repositories[adapter.repository_id('a/preset')] = 'a/preset'
+                with patch.object(adapter, '_refs', side_effect=PublicError(code, 'Unavailable', status)):
+                    response = client.post('/api/installations/sync', headers=headers)
+                self.assertEqual(response.status_code, status, response.text)
+                self.assertEqual(response.json()['code'], code)
+                self.assertIn('Nenhum repositório', response.json()['detail'])
+                self.assertEqual(client.get('/api/installations', headers=headers).json()['items'], [])
+
     def test_private_repository_keeps_saved_selection_until_it_returns(self):
         headers = {'Authorization': 'Bearer '+'t'*32}
         with tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
