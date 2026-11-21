@@ -1,8 +1,8 @@
 /* The editorial, serif/orange direction follows the supplied design preview. */
 :root {
   color-scheme: light;
-  --bg: #fcfcfa; --surface: #fff; --text: #242621; --text-muted: #73766e;
-  --border: #e5e6df; --accent: #b94f1a; --accent-fg: #fff;
+  --bg: #fcfcfa; --surface: #fff; --text: #242621; --text-muted: #62665e;
+  --border: #e5e6df; --control-border: #85897f; --accent: #b04a17; --accent-fg: #fff;
   --primary-action: #28352a; --primary-action-fg: #fff; --radius: 6px;
   --font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --soft: #f3f4ef; --warm: #fff2e8; --green: #347453; --green-soft: #edf5ef;
@@ -11,7 +11,7 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #171a17; --surface: #1d211d; --text: #edf0e9; --text-muted: #a1a79c;
-  --border: #353b33; --accent: #efab7f; --accent-fg: #171a17;
+  --border: #353b33; --control-border: #878f82; --accent: #efab7f; --accent-fg: #171a17;
   --primary-action: #e0e7d9; --primary-action-fg: #1d211d;
   --soft: #262c25; --warm: #36291f; --green: #9ac8a8; --green-soft: #223329;
   --red: #f1a69e; --red-soft: #382724; --overlay: #0009;
@@ -23,9 +23,11 @@ button, input, select { font: inherit; }
 a { color: inherit; text-underline-offset: 4px; }
 button, .button { cursor: pointer; border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 15px; background: var(--surface); color: var(--text); font-weight: 500; line-height: 1.4; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
 button:hover, .button:hover { background: var(--soft); }
-button:disabled { opacity: .5; cursor: not-allowed; }
+button:disabled { opacity: 1; cursor: not-allowed; color: var(--text-muted); background: var(--soft); border-color: var(--border); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
-input, select { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; color: var(--text); background: var(--surface); min-width: 0; max-width: 100%; }
+input, select { border: 1px solid var(--control-border); border-radius: var(--radius); padding: 10px 12px; color: var(--text); background: var(--surface); min-width: 0; max-width: 100%; }
+input::placeholder { color: var(--text-muted); opacity: 1; }
+input:disabled, select:disabled { color: var(--text-muted); opacity: 1; background: var(--soft); }
 input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--primary-action); flex: 0 0 auto; }
 input[type="search"] { width: 245px; }
 label { font-weight: 500; }
@@ -47,7 +49,7 @@ small, .small { font-size: 12px; }
 .icon-button { padding: 6px; width: 34px; height: 34px; font-size: 21px; border: 0; background: transparent; }
 .quiet { background: transparent; padding: 6px 10px; border-color: transparent; }
 .primary { background: var(--primary-action); color: var(--primary-action-fg); border-color: var(--primary-action); }
-.primary:hover { opacity: .88; background: var(--primary-action); }
+.primary:hover:not(:disabled) { opacity: .88; background: var(--primary-action); }
 .navigation { display: flex; gap: 32px; border-bottom: 1px solid var(--border); overflow-x: auto; }
 .navigation a { text-decoration: none; padding: 16px 0; color: var(--text-muted); white-space: nowrap; border-bottom: 2px solid transparent; font-size: 13px; }
 .navigation a[aria-current="page"] { border-color: var(--accent); color: var(--text); }

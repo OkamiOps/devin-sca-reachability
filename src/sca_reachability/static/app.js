@@ -7,11 +7,11 @@ const state = {
   branches: [], selected: new Set(), scans: [], deliveries: [],
   filter: "", statusFilter: "all", busy: false, operation: null, epoch: 0, detailEpoch: 0,
   lastUpdated: null, timer: null, noticeTimer: null, detailTimer: null,
-  selectionError: "", saveError: "",
+  selectionError: "", saveError: "", connectionNotice: false,
 };
 const MAX_BRANCHES = 20;
 class ApiError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message) { super(message); this.status = status; this.connection = status === 0 || status >= 500; }
 }
 
 async function api(path, { method = "GET", body } = {}) {
@@ -51,13 +51,15 @@ async function api(path, { method = "GET", body } = {}) {
         429: "Muitas solicitações. Aguarde um momento e tente novamente.",
       })[response.status] || "Não foi possível concluir a solicitação. Tente novamente.");
     }
-    if (response.status === 204) return null;
+    if (response.status === 204) { if (state.connectionNotice) clearNotice(); return null; }
     const type = response.headers.get("content-type") || "";
     if (!type.includes("application/json")) throw new Error("O serviço retornou uma resposta inesperada.");
-    return await response.json();
+    const result = await response.json();
+    if (state.connectionNotice) clearNotice();
+    return result;
   } catch (error) {
-    if (error.name === "AbortError") throw new Error("O serviço demorou para responder. Tente novamente.");
-    if (error instanceof TypeError) throw new Error("Não foi possível conectar ao serviço. Verifique a conexão e tente novamente.");
+    if (error.name === "AbortError") throw new ApiError(0, "O serviço demorou para responder. Tente novamente.");
+    if (error instanceof TypeError) throw new ApiError(0, "Não foi possível conectar ao serviço. Verifique a conexão e tente novamente.");
     throw error;
   } finally { clearTimeout(timer); }
 }
@@ -73,17 +75,36 @@ function badge(text, kind = "muted", dot = false) {
   const safeKind = ["muted", "live", "demo", "unknown", "failed", "completed", "queued", "running", "error"].includes(kind) ? kind : "muted";
   return `<span class="badge ${safeKind}">${dot ? '<span class="dot" aria-hidden="true"></span>' : ""}${e(text)}</span>`;
 }
-function notice(message, error = false) {
+function notice(message, error = false, connection = false) {
+  state.connectionNotice = error && connection;
   clearTimeout(state.noticeTimer);
   const node = $("#notification");
   node.textContent = message; node.classList.toggle("error", error); node.hidden = false;
   node.setAttribute("role", error ? "alert" : "status");
   if (!error) state.noticeTimer = setTimeout(() => { node.hidden = true; }, 8000);
 }
-function clearNotice() { $("#notification").hidden = true; }
+function clearNotice() { $("#notification").hidden = true; state.connectionNotice = false; }
 function focusMain() {
   $("#main").focus({ preventScroll: true });
   window.scrollTo({ top: 0, behavior: "instant" });
+}
+function captureFocus() {
+  const node = document.activeElement;
+  if (!node || !$("#main").contains(node)) return null;
+  return { id: node.id, action: node.dataset?.action, branch: node.dataset?.branch,
+    item: node.dataset?.id, start: node.selectionStart, end: node.selectionEnd };
+}
+function restoreFocus(saved) {
+  if (!saved || $("#detail-dialog").open) return;
+  let node = saved.id ? document.getElementById(saved.id) : null;
+  if (!node && saved.action) node = [...document.querySelectorAll("[data-action]")].find(candidate =>
+    candidate.dataset.action === saved.action && candidate.dataset.branch === saved.branch && candidate.dataset.id === saved.item);
+  if (!node || node.disabled) {
+    if (state.view === "branches" && saved.action) $("#selection-summary")?.focus({ preventScroll: true });
+    return;
+  }
+  node.focus({ preventScroll: true });
+  if (typeof saved.start === "number" && node.setSelectionRange) node.setSelectionRange(saved.start, saved.end);
 }
 function empty(title, text, action = "") {
   return `<div class="empty"><h3>${e(title)}</h3><p>${e(text)}</p>${action}</div>`;
@@ -201,7 +222,7 @@ function branches() {
     ${scopeEmpty() || `<div class="branch-layout"><section><div class="section-heading"><div><span class="eyebrow">ESCOPO DO MONITORAMENTO</span><h2>Branches de ${e(repo()?.full_name?.split("/").pop() || "repositório")}</h2></div></div>
       <label class="field" for="branch-search">Buscar branch<input id="branch-search" type="search" placeholder="Filtrar pelo nome…" value="${e(state.filter)}" autocomplete="off"></label>
       <div class="actions spaced">${button("Selecionar filtradas", "select-filtered", "quiet", state.busy)}${button("Limpar seleção", "clear-selection", "quiet", state.busy || !state.selected.size)}</div><p class="secondary small">Selecionar filtradas inclui apenas as branches deste repositório que correspondem à busca, até 20 no total. Limpar seleção desmarca todas deste repositório, inclusive as ocultas pelo filtro.</p>
-      <div class="save-bar"><p id="selection-summary" aria-live="polite">${selectionSummary()}</p><div class="actions">${button("Descartar", "discard", "quiet", !dirty || state.busy)}${button(state.operation === "save" ? "Salvando…" : "Salvar seleção", "save", "primary", !dirty || state.busy || state.selected.size > MAX_BRANCHES)}</div><p id="selection-error" class="form-error" role="status">${e(selectionMessage())}</p><p id="save-error" class="form-error" role="alert">${e(state.saveError)}</p></div>
+      <div class="save-bar"><p id="selection-summary" aria-live="polite" tabindex="-1">${selectionSummary()}</p><div class="actions">${button("Descartar", "discard", "quiet", !dirty || state.busy)}${button(state.operation === "save" ? "Salvando…" : "Salvar seleção", "save", "primary", !dirty || state.busy || state.selected.size > MAX_BRANCHES)}</div><p id="selection-error" class="form-error" role="status">${e(selectionMessage())}</p><p id="save-error" class="form-error" role="alert" tabindex="-1">${e(state.saveError)}</p></div>
       <div id="branch-list" class="spaced branch-list">${branchRows()}</div>
       <p class="secondary small spaced">Desmarcar todas pausa novas análises por webhook neste repositório. O histórico é preservado.</p></section>
       <aside class="panel panel-body"><span class="eyebrow">COMO FUNCIONA</span><div class="flow" style="border-top:0;padding-top:0"><span class="flow-number">01</span><div><h3>Selecione e salve</h3><p>A seleção só muda no serviço depois de salvar.</p></div></div><div class="flow"><span class="flow-number">02</span><div><h3>Envie código</h3><p>${demo() ? "Nesta demonstração, simule um push em uma branch salva." : "Um push em uma branch monitorada dispara a análise no serviço."}</p></div></div><div class="flow"><span class="flow-number">03</span><div><h3>Revise os achados</h3><p>Consulte os componentes, as evidências e as limitações de cada execução.</p></div></div><div id="simulation-controls">${demo() ? simulationControls() : ""}</div></aside></div>`}`;
@@ -234,6 +255,7 @@ function deliveryLabel(status) {
 
 function renderView() {
   if (!state.authenticated) return;
+  const focused = captureFocus();
   renderEnvironment();
   document.querySelectorAll("[data-view]").forEach(link => {
     if (link.dataset.view === state.view) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
@@ -241,6 +263,7 @@ function renderView() {
   $("#main").setAttribute("aria-busy", String(state.busy));
   const operationLabel = ({ save: "Salvando a seleção de branches…", scan: "Enviando análise para a fila…", sync: "Consultando o inventário do GitHub…" })[state.operation] || "Atualizando dados do serviço…";
   $("#main").innerHTML = `${state.busy ? `<p class="loading-status" role="status">${operationLabel}</p>` : ""}${({ overview, branches, results, activity })[state.view]()}`;
+  restoreFocus(focused);
 }
 
 function scansPath() {
@@ -271,6 +294,7 @@ async function refresh({ full = true, silent = false } = {}) {
     notice("Salve ou descarte suas alterações antes de atualizar a lista.", true); return;
   }
   const epoch = ++state.epoch;
+  const focused = captureFocus();
   if (!silent) { state.busy = true; renderView(); }
   try {
     const responses = await Promise.all([api("/api/dashboard"), api("/api/deliveries"), ...(full ? [loadScoped(epoch)] : scansPath() ? [api(scansPath())] : [])]);
@@ -288,9 +312,10 @@ async function refresh({ full = true, silent = false } = {}) {
     }
     else if (!$("#detail-dialog").open && !$("#main").contains(document.activeElement) && state.view !== "branches") renderView();
   } catch (error) {
-    if (epoch === state.epoch && state.authenticated) notice(`${error.message}${silent ? " Os dados exibidos podem estar desatualizados." : ""}`, true);
+    if (epoch === state.epoch && state.authenticated) notice(`${error.message}${silent ? " Os dados exibidos podem estar desatualizados." : ""}`, true, error.connection);
   } finally {
     if (epoch === state.epoch) { state.busy = false; if (!silent) renderView(); }
+    if (!silent && state.authenticated) restoreFocus(focused);
     scheduleRefresh();
   }
 }
@@ -383,14 +408,22 @@ async function openDetail(id, polling = false) {
 
 async function mutation(action, operation = null) {
   if (state.busy) return;
+  const focused = captureFocus();
   state.busy = true; state.operation = operation; const epoch = ++state.epoch; renderView(); clearNotice();
   try {
     await action();
   } catch (error) {
     if (operation === "save") state.saveError = error.message;
-    if (state.authenticated) notice(error.message, true);
+    if (state.authenticated) notice(error.message, true, error.connection);
   }
-  finally { if (epoch === state.epoch) { state.busy = false; state.operation = null; renderView(); } scheduleRefresh(); }
+  finally {
+    if (epoch === state.epoch) {
+      state.busy = false; state.operation = null; renderView();
+      if (state.authenticated && operation === "save") $(state.saveError ? "#save-error" : "#selection-summary")?.focus({ preventScroll: true });
+      else restoreFocus(focused);
+    }
+    scheduleRefresh();
+  }
 }
 async function saveBranches() {
   state.saveError = "";
@@ -438,7 +471,8 @@ document.addEventListener("click", async event => {
   const target = event.target.closest("[data-action]");
   if (!target || target.disabled) return;
   const action = target.dataset.action;
-  if (action === "demo-login" && demo()) {
+  if (action === "skip-main") { event.preventDefault(); $("#main").focus({ preventScroll: true }); }
+  else if (action === "demo-login" && demo()) {
     $("#access-token").value = "local-demo";
     $("#login-form").requestSubmit();
   }
@@ -506,7 +540,7 @@ document.addEventListener("change", async event => {
     if (demo()) $("#simulation-controls").innerHTML = simulationControls();
     return;
   }
-  if (target.dataset.control === "status") { state.statusFilter = target.value; renderView(); return; }
+  if (target.dataset.control === "status") { state.statusFilter = target.value; $("#results-list").innerHTML = resultsList(); return; }
   if (target.dataset.control === "installation" || target.dataset.control === "repository") {
     if (isDirty(state.branches, state.selected)) {
       notice("Salve ou descarte suas alterações antes de mudar o escopo.", true); renderView(); return;
@@ -539,7 +573,7 @@ $("#detail-dialog").addEventListener("close", () => { clearTimeout(state.detailT
 $("#logout").addEventListener("click", async () => {
   if (isDirty(state.branches, state.selected)) { notice("Salve ou descarte suas alterações antes de sair.", true); return; }
   try { await api("/api/session", { method: "DELETE" }); endSession(); clearNotice(); }
-  catch (error) { notice(error.message, true); }
+  catch (error) { notice(error.message, true, error.connection); }
 });
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;

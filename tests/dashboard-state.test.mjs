@@ -34,6 +34,7 @@ function harness(responder) {
     navigator: { clipboard },
     window: { addEventListener(name, handler) { windowEvents.set(name, handler); }, scrollTo() {} }, document: {
       querySelector: node, querySelectorAll() { return []; },
+      getElementById(id) { return node("#" + id); },
       addEventListener(name, handler) { events.set(name, handler); }, documentElement: { dataset: {} }, activeElement: null, visibilityState: "visible",
     },
     async fetch(path, options) {
@@ -42,7 +43,7 @@ function harness(responder) {
       return new Response(JSON.stringify(result.body ?? {}), { status: result.status ?? 200, headers: { "Content-Type": "application/json" } });
     },
   };
-  vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped, overview, activity, scanTable, branchRows, simulationControls, renderLogin, openDetail, focusMain, matchingScans, resultsList, refresh, selectFiltered, findingMarkup, advisoryLink, manifestLink, findingInstructions, copyInstructions, selectionSummary };`, sandbox);
+  vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped, overview, activity, scanTable, branchRows, simulationControls, renderLogin, openDetail, focusMain, matchingScans, resultsList, refresh, selectFiltered, findingMarkup, advisoryLink, manifestLink, findingInstructions, copyInstructions, selectionSummary, renderView };`, sandbox);
   return { ...sandbox.testApp, nodes, calls, events, windowEvents, timers, clipboard, document: sandbox.document,
     async tick(delay) {
       const entry = [...timers].find(([, timer]) => timer.delay === delay);
@@ -346,6 +347,7 @@ test("a rejected save retains the unsaved selection instead of claiming persiste
   assert.match(app.nodes.get("#notification").textContent, /Não foi possível/);
   assert.match(app.state.saveError, /Não foi possível/);
   assert.match(app.nodes.get("#main").innerHTML, /id="save-error"[^>]*>Não foi possível/);
+  assert.equal(app.nodes.get("#save-error").focusOptions.preventScroll, true);
   assert.equal(app.state.busy, false);
 });
 
@@ -359,6 +361,56 @@ test("accepted selection uses server truth and installation-scoped mutation head
   assert.equal(app.calls[0].path, "/api/installations/17/repositories/42/branches");
   assert.equal(app.calls[0].options.headers["X-SCA-Request"], "1");
   assert.equal(app.calls[0].options.credentials, "same-origin");
+  assert.equal(app.nodes.get("#selection-summary").focusOptions.preventScroll, true);
+});
+
+test("skip link focuses the current view without changing its route", async () => {
+  const app = harness(() => ({}));
+  app.state.view = "branches";
+  let prevented = false;
+  await app.events.get("click")({ preventDefault() { prevented = true; }, target: { closest() { return { dataset: { action: "skip-main" } }; } } });
+  assert.equal(prevented, true);
+  assert.equal(app.state.view, "branches");
+  assert.equal(app.nodes.get("#main").focusOptions.preventScroll, true);
+  const html = await readFile(new URL("../src/sca_reachability/static/index.html", import.meta.url), "utf8");
+  assert.match(html, /class="skip-link"[^>]+data-action="skip-main"/);
+});
+
+test("status filtering preserves the select node and focus, and generic renders restore text selection", async () => {
+  const app = harness(() => ({}));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "demo" }, view: "results" });
+  const select = { dataset: { control: "status" }, value: "failed", matches() { return false; } };
+  app.document.activeElement = select;
+  app.nodes.set("#status-filter", select);
+  await app.events.get("change")({ target: select });
+  assert.equal(app.nodes.get("#status-filter"), select);
+  assert.equal(app.document.activeElement, select);
+  const search = { id: "results-search", selectionStart: 2, selectionEnd: 4 };
+  app.document.activeElement = search;
+  app.nodes.set("#main", { contains() { return true; }, setAttribute() {} });
+  const replacement = { focus(options) { this.focusOptions = options; }, setSelectionRange(start, end) { this.range = [start, end]; } };
+  app.nodes.set("#results-search", replacement);
+  app.renderView();
+  assert.equal(replacement.focusOptions.preventScroll, true);
+  assert.deepEqual(replacement.range, [2, 4]);
+  app.state.view = "branches";
+  app.document.activeElement = { dataset: { action: "discard" } };
+  app.document.querySelectorAll = selector => selector === "[data-action]" ? [{ disabled: true, dataset: { action: "discard" } }] : [];
+  app.renderView();
+  assert.equal(app.nodes.get("#selection-summary").focusOptions.preventScroll, true);
+});
+
+test("a successful later request clears a connection alert", async () => {
+  let unavailable = true;
+  const app = harness(() => unavailable ? { status: 503 } : { body: {} });
+  Object.assign(app.state, { authenticated: true, meta: { mode: "demo" }, view: "results" });
+  await app.refresh({ full: false, silent: true });
+  assert.equal(app.state.connectionNotice, true);
+  assert.equal(app.nodes.get("#notification").hidden, false);
+  unavailable = false;
+  await app.api("/api/meta");
+  assert.equal(app.state.connectionNotice, false);
+  assert.equal(app.nodes.get("#notification").hidden, true);
 });
 
 test("expired session clears private data and releases a pending busy state", async () => {
