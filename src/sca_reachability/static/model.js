@@ -35,7 +35,8 @@ export function advisoryURL(id) {
 
 export function findingPage(findings, filter = "all", page = 0, size = 10) {
   const sorted = sortFindings(findings).filter(f => filter === "all" ||
-    (filter === "production" ? f.reachability === "reachable" && findingScope(f) === "production" :
+    (filter === "transitive_unknown" ? isTransitiveUnknown(f) :
+      filter === "production" ? f.reachability === "reachable" && findingScope(f) === "production" :
       filter === "nonproduction" ? f.reachability === "reachable" && ["test_only", "dev_tooling"].includes(findingScope(f)) :
         reachabilityPresentation(f.reachability).tone === filter));
   const pages = Math.max(1, Math.ceil(sorted.length / size));
@@ -88,7 +89,7 @@ const UNREPORTED = { label: "Não informado", tone: "unknown", order: 1, headlin
 export function reachabilityPresentation(status) {
   return Object.hasOwn(REACHABILITY, status) ? REACHABILITY[status] : UNREPORTED;
 }
-const EVIDENCE_KINDS = { import: "Importa", call: "Chama", dynamic: "Carga dinâmica", escape: "Uso indireto" };
+const EVIDENCE_KINDS = { import: "Importa", entrypoint: "Entrada CLI", transitive_import: "Importa intermediária", transitive_entrypoint: "CLI intermediária", call: "Chama", dynamic: "Carga dinâmica", escape: "Uso indireto" };
 export function evidenceSteps(evidence) {
   return (Array.isArray(evidence) ? evidence : [])
     .filter(item => item && typeof item.path === "string" && item.path && Number.isInteger(item.line) && item.line > 0)
@@ -103,7 +104,8 @@ export function evidenceSteps(evidence) {
 }
 export function sortFindings(findings) {
   const order = finding => reachabilityPresentation(finding?.reachability).order * 3 +
-    (finding?.reachability === "reachable" ? findingScope(finding) === "production" ? 0 : findingScope(finding) ? 1 : 2 : 0);
+    (finding?.reachability === "reachable" ? findingScope(finding) === "production" ? 0 : findingScope(finding) ? 1 : 2 :
+      reachabilityPresentation(finding?.reachability).tone === "unknown" && !isTransitiveUnknown(finding) ? 1 : 0);
   return (Array.isArray(findings) ? [...findings] : [])
     .sort((a, b) => order(a) - order(b));
 }
@@ -111,6 +113,19 @@ export function sortFindings(findings) {
 export function findingScope(finding) {
   const scope = finding?.reachability_scope ?? finding?.reachability_analysis?.scope;
   return ["production", "test_only", "dev_tooling"].includes(scope) ? scope : null;
+}
+
+export function isTransitiveUnknown(finding) {
+  return finding?.reachability === "unknown" && finding?.reachability_analysis?.transitive_imported_via === true;
+}
+
+export function dependencyPresentation(finding) {
+  const relation = finding?.dependency_relation ?? finding?.reachability_analysis?.dependency_relation;
+  if (relation === "direct") return "Direta";
+  if (relation !== "transitive") return "Relação não informada";
+  const chains = finding?.dependency_via ?? finding?.reachability_analysis?.dependency_via;
+  const roots = [...new Set((Array.isArray(chains) ? chains : []).filter(chain => Array.isArray(chain) && typeof chain[0] === "string" && chain[0]).map(chain => chain[0]))];
+  return roots.length ? `Transitiva via ${roots.slice(0, 3).join(", ")}${roots.length > 3 ? ` e mais ${roots.length - 3}` : ""}` : "Transitiva · grafo não resolvido";
 }
 
 export function findingPresentation(finding) {

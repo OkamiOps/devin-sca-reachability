@@ -777,3 +777,28 @@ test("public report exposes context filters, production ordering and local-load 
   app.state.branches = [{ name: "main", selected: true }];
   assert.match(app.overview(), /1 alcançáveis em produção · 2 só em testes\/ferramentas/);
 });
+
+test("public transitive bucket shows importing ancestor and never labels the finding unreachable", async () => {
+  const findings = [
+    { id: "direct", package_name: "body-parser", reachability: "reachable", reachability_scope: "production", dependency_relation: "direct" },
+    { id: "indirect", package_name: "qs", reachability: "unknown", reachability_scope: "production", dependency_relation: "transitive",
+      dependency_via: [["body-parser", "qs"]], reachability_reason: "Dependência transitiva via body-parser, importado em server.js:5; o código intermediário não foi analisado.",
+      reachability_analysis: { transitive_imported_via: true },
+      reachability_evidence: [{ path: "server.js", line: 5, kind: "transitive_import", detail: "require('body-parser')" }] },
+    { id: "other", package_name: "other", reachability: "unknown" },
+  ];
+  const app = harness(async () => ({ body: { status: "completed", source: "github", repository: "org/repo", commit_sha: "a".repeat(40), findings, components: [] } }));
+  Object.assign(app.state, { authenticated: true, meta: { mode: "public" } });
+  await app.openDetail("scan");
+  assert.match(app.nodes.get("#report-findings").innerHTML, />Direta</);
+  const target = { dataset: { action: "finding-filter", filter: "transitive_unknown" } };
+  await app.events.get("click")({ target: { closest() { return target; } } });
+  const markup = app.nodes.get("#report-findings").innerHTML;
+  assert.equal((markup.match(/<article /g) || []).length, 1);
+  assert.match(markup, /Transitiva via body-parser/);
+  assert.match(markup, /importado em server.js:5/);
+  assert.match(markup, /Importa intermediária/);
+  assert.match(markup, /Desconhecido não significa seguro/);
+  assert.doesNotMatch(markup, /<strong>other<\/strong>/);
+  assert.equal(findings[1].reachability, "unknown");
+});

@@ -104,7 +104,9 @@ class PublicTests(unittest.TestCase):
             'root/requirements.txt': b'PyYAML==5.3\n',
             'root/main.py': b'import yaml\nyaml.load("hi")\n',
             'root/package-lock.json': json.dumps({'lockfileVersion': 3, 'packages': {
-                '': {}, 'node_modules/lodash': {'version': '4.17.20', 'dev': True},
+                '': {'devDependencies': {'lodash': '4.17.20'}},
+                'node_modules/lodash': {'version': '4.17.20', 'dev': True, 'dependencies': {'qs': '1.0.0'}},
+                'node_modules/qs': {'version': '1.0.0', 'dev': True},
             }}).encode(),
             'root/main.js': b'const p = require("lodash");\np.template();\nrequire(path.resolve(__dirname + "/config/" + env + ".js"));\n',
         })
@@ -123,6 +125,7 @@ class PublicTests(unittest.TestCase):
             return httpx.Response(200, json={'affected': [
                 {'package': {'name': 'PyYAML', 'ecosystem': 'PyPI'}, 'ecosystem_specific': {'imports': [{'symbols': ['load']}]}},
                 {'package': {'name': 'lodash', 'ecosystem': 'npm'}, 'ecosystem_specific': {'imports': [{'symbols': ['template']}]}},
+                {'package': {'name': 'qs', 'ecosystem': 'npm'}},
             ]})
         transport = httpx.MockTransport(handler)
         p = PublicGitHubAdapter(('owner/repo',), httpx.Client(transport=transport))
@@ -149,12 +152,18 @@ class PublicTests(unittest.TestCase):
                 self.assertEqual(findings['lodash']['reachability_scope'], 'dev_tooling')
                 self.assertTrue(findings['lodash']['reachability_analysis']['dependency_dev'])
                 self.assertEqual(findings['lodash']['reachability_analysis']['notes'][0]['line'], 3)
+                self.assertEqual(findings['qs']['reachability'], 'unknown')
+                self.assertEqual(findings['qs']['dependency_relation'], 'transitive')
+                self.assertEqual(findings['qs']['dependency_via'], [['lodash', 'qs']])
+                self.assertIn('main.js:1', findings['qs']['reachability_analysis']['dependency_note'])
                 listed = c.get('/api/scans', headers=headers).json()['items'][0]
+                self.assertEqual(listed['transitive_imported_unknown_count'], 1)
                 self.assertEqual(listed['reachability_scope_counts'],
                                  {'production': 1, 'test_only': 0, 'dev_tooling': 1, 'unreported': 0})
                 with app.state.database.transaction() as connection:
                     connection.execute("UPDATE scan_findings SET reachability_analysis_json = '{}' WHERE scan_id = ?", (scan,))
                 legacy = c.get('/api/scans/'+scan, headers=headers).json()
                 self.assertTrue(all(item['reachability_scope'] is None for item in legacy['findings']))
+                self.assertTrue(all(item['dependency_relation'] is None for item in legacy['findings']))
                 self.assertEqual(c.get('/api/scans', headers=headers).json()['items'][0]['reachability_scope_counts']['unreported'], 2)
         self.assertFalse(any('api.github.com' in url for url in requests))

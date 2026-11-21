@@ -406,6 +406,15 @@ def _js_facts(source: SourceFile, package: str, symbols: frozenset[str]) -> _Fil
         else:
             namespaces.add(binding)
 
+    for match in re.finditer(r"\b[\w$]+\s*\.\s*loadNpmTasks\s*\(", masked):
+        end = _call_end(masked, match.end())
+        arg = original[match.end():end].strip() if end is not None else ''
+        line = _line_at(masked, match.start())
+        if not re.fullmatch(r"(['\"])\0*\1", _js_mask(arg)):
+            facts.uncertain.append(_evidence(source, line, "dynamic", "loadNpmTasks() com nome não literal"))
+        elif _js_package_of(arg[1:-1]) == package:
+            facts.imports.append(_evidence(source, line, "import", f"loadNpmTasks({arg}) carrega o pacote"))
+
     import_lines = {item.line for item in facts.imports}
     for local, imported in named.items():
         if symbols and imported not in symbols:

@@ -373,6 +373,7 @@ def create_app(
             results = [
                 {**{key: row[key] for key in SCAN_FIELDS}, "advisory_ids": [], "package_names": [],
                  "reachability_counts": {"reachable": 0, "unreachable": 0, "unknown": 0},
+                 "transitive_imported_unknown_count": 0,
                  "reachability_scope_counts": {"production": 0, "test_only": 0, "dev_tooling": 0, "unreported": 0}}
                 for row in rows
             ]
@@ -390,12 +391,16 @@ def create_app(
                 ):
                     by_id[item["scan_id"]]["reachability_counts"][item["reachability"]] = item["total"]
                 for item in connection.execute(
-                    f"""SELECT scan_id, reachability_analysis_json FROM scan_findings
-                    WHERE scan_id IN ({placeholders}) AND reachability = 'reachable'""", list(by_id),
+                    f"""SELECT scan_id, reachability, reachability_analysis_json FROM scan_findings
+                    WHERE scan_id IN ({placeholders})""", list(by_id),
                 ):
-                    scope = json.loads(item["reachability_analysis_json"]).get("scope")
-                    key = scope if scope in {"production", "test_only", "dev_tooling"} else "unreported"
-                    by_id[item["scan_id"]]["reachability_scope_counts"][key] += 1
+                    analysis = json.loads(item["reachability_analysis_json"])
+                    if item["reachability"] == "reachable":
+                        scope = analysis.get("scope")
+                        key = scope if scope in {"production", "test_only", "dev_tooling"} else "unreported"
+                        by_id[item["scan_id"]]["reachability_scope_counts"][key] += 1
+                    elif item["reachability"] == "unknown" and analysis.get("transitive_imported_via") is True:
+                        by_id[item["scan_id"]]["transitive_imported_unknown_count"] += 1
                 for item in connection.execute(
                     f"""SELECT DISTINCT scan_id, name FROM scan_components
                     WHERE scan_id IN ({placeholders}) ORDER BY name""", list(by_id),
@@ -438,6 +443,8 @@ def create_app(
                     finding.pop("reachability_analysis_json") or "{}"
                 )
                 finding["reachability_scope"] = finding["reachability_analysis"].get("scope")
+                finding["dependency_relation"] = finding["reachability_analysis"].get("dependency_relation")
+                finding["dependency_via"] = finding["reachability_analysis"].get("dependency_via", [])
                 findings.append(finding)
             result["findings"] = findings
             result["warnings"] = [item["warning"] for item in connection.execute(

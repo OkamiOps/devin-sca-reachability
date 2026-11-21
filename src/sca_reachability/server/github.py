@@ -433,7 +433,9 @@ class DemoGitHubAdapter:
                 "name": "fictional-demo-app",
                 "lockfileVersion": 3,
                 "packages": {
-                    "": {"name": "fictional-demo-app", "version": "1.0.0"},
+                    "": {"name": "fictional-demo-app", "version": "1.0.0", "dependencies": {
+                        "fictional-demo-package": version, "fictional-plugin-host": "0.3.0",
+                    }},
                     "node_modules/fictional-demo-package": {"version": version},
                     "node_modules/fictional-plugin-host": {"version": "0.3.0"},
                 },

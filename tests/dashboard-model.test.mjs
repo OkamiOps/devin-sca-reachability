@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 // No package.json or build is needed to exercise the browser's pure ES module.
 const source = await readFile(new URL("../src/sca_reachability/static/model.js", import.meta.url), "utf8");
 const { escapeHTML, count, isDirty, reachabilityLabel, explanationPresentation, scopedRepositoryPath, formatDate, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
-const { supportedMode, githubLink, advisoryURL, findingPage, findingScope, findingPresentation, scopeCounts, scopeSummary } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const { supportedMode, githubLink, advisoryURL, findingPage, findingScope, findingPresentation, scopeCounts, scopeSummary, dependencyPresentation, isTransitiveUnknown } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 
 test("public is a supported mode, but unknown modes are rejected", () => {
   for (const mode of ["demo", "live", "public"]) assert.equal(supportedMode(mode), true);
@@ -140,4 +140,25 @@ test("empty and malformed scopes never invent production reachability", () => {
   assert.equal(findingPresentation({ reachability: "safe", reachability_scope: "production" }).tone, "unknown");
   assert.equal(findingPage([], "nonproduction").total, 0);
   assert.equal(findingPage([{ reachability: "reachable" }], "production").total, 0);
+});
+
+test("dependency relation and imported-transitive bucket never imply safe or reachable", () => {
+  const transitive = { id: "qs", reachability: "unknown", dependency_relation: "transitive",
+    dependency_via: [["body-parser", "qs"], ["express", "body-parser", "qs"]],
+    reachability_analysis: { transitive_imported_via: true } };
+  assert.equal(dependencyPresentation(transitive), "Transitiva via body-parser, express");
+  assert.equal(dependencyPresentation({ dependency_relation: "direct" }), "Direta");
+  assert.equal(dependencyPresentation({ dependency_relation: "transitive", dependency_via: [null, [], [1]] }), "Transitiva · grafo não resolvido");
+  assert.equal(dependencyPresentation(null), "Relação não informada");
+  assert.equal(dependencyPresentation({ reachability_analysis: { dependency_relation: "direct" } }), "Direta");
+  assert.equal(isTransitiveUnknown(transitive), true);
+  assert.equal(isTransitiveUnknown({ reachability: "reachable", reachability_analysis: { transitive_imported_via: true } }), false);
+  assert.equal(isTransitiveUnknown({ reachability: "unknown", reachability_analysis: { transitive_imported_via: "true" } }), false);
+  const findings = [{ id: "other", reachability: "unknown" }, transitive, { id: "prod", reachability: "reachable", reachability_scope: "production" }];
+  const original = JSON.stringify(findings);
+  assert.deepEqual(findingPage(findings, "transitive_unknown").items.map(f => f.id), ["qs"]);
+  assert.equal(findingPage([], "transitive_unknown").total, 0);
+  assert.deepEqual(sortFindings(findings).map(f => f.id), ["prod", "qs", "other"]);
+  assert.match(findingPresentation(transitive).caveat, /não significa seguro/);
+  assert.equal(JSON.stringify(findings), original);
 });

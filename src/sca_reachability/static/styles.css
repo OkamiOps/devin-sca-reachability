@@ -1,6 +1,7 @@
 /* Product workspace: clear evidence, a compact workbench, and persistent navigation. */
 .finding-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 12px; }
-.finding-filters button { min-height: 44px; border-radius: 9px; }
+.finding-filters button { min-height: 44px; min-width: 0; border-radius: 9px; white-space: normal; }
+.dependency-context { overflow-wrap: anywhere; }
 .finding-filters button[aria-pressed="true"] { background: var(--warm); color: var(--accent); border-color: var(--accent); }
 .finding-filters span { margin-left: 6px; font-variant-numeric: tabular-nums; }
 .scope-summary { font-size: 12px; font-weight: 500; line-height: 1.7; }

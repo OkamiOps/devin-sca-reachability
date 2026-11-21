@@ -1,4 +1,4 @@
-import { escapeHTML as e, formatDate, count, scanLabel, reachabilityLabel, isDirty, scopedRepositoryPath, explanationPresentation, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts, supportedMode, githubLink, advisoryURL, findingPage, findingPresentation, scopeCounts, scopeSummary } from "/model.js";
+import { escapeHTML as e, formatDate, count, scanLabel, reachabilityLabel, isDirty, scopedRepositoryPath, explanationPresentation, reachabilityPresentation, evidenceSteps, sortFindings, reachabilityCounts, supportedMode, githubLink, advisoryURL, findingPage, findingPresentation, scopeCounts, scopeSummary, dependencyPresentation, isTransitiveUnknown } from "/model.js";
 
 const $ = selector => document.querySelector(selector);
 const state = {
@@ -74,6 +74,7 @@ function reachSentence(scan) {
     .filter(([key]) => counts[key] > 0 && !(key === "reachable" && scan.reachability_scope_counts))
     .map(([key, one, many]) => `${counts[key]} ${counts[key] === 1 ? one : many}`);
   if (scan.reachability_scope_counts) parts.unshift(scopeSummary(scan.reachability_scope_counts));
+  if (scan.transitive_imported_unknown_count) parts.push(`${scan.transitive_imported_unknown_count} desses desconhecidos são transitivos via importações/CLI`);
   return parts.length ? `Alcance estático: ${parts.join(" · ")}.` : "Alcance não informado; trate como desconhecido.";
 }
 
@@ -444,7 +445,7 @@ function findingMarkup(finding, scan) {
   const steps = evidenceSteps(finding.reachability_evidence);
   const analysis = finding.reachability_analysis && typeof finding.reachability_analysis === "object" ? finding.reachability_analysis : {};
   const notes = evidenceSteps(analysis.notes);
-  const contextNote = `${analysis.dependency_dev ? '<p class="secondary small">Lockfile: dependência de desenvolvimento (<code>dev: true</code>).</p>' : ''}${notes.length ? `<p class="analysis-note small"><strong>Nota de análise · cargas locais</strong><br>${notes.map(note => manifestLink(note.path, scan, note.line)).join(" · ")}<br>Caminhos locais reconhecidos, não cargas de pacotes. Os arquivos locais são analisados dentro da cobertura registrada.</p>` : ''}`;
+  const contextNote = `<p class="secondary small dependency-context"><strong>${e(dependencyPresentation(finding))}</strong>${isTransitiveUnknown(finding) ? " · Desconhecido: revise os pacotes intermediários, cujo código não foi analisado." : ""}</p>${analysis.dependency_dev ? '<p class="secondary small">Lockfile: dependência de desenvolvimento (<code>dev: true</code>).</p>' : ''}${notes.length ? `<p class="analysis-note small"><strong>Nota de análise · cargas locais</strong><br>${notes.map(note => manifestLink(note.path, scan, note.line)).join(" · ")}<br>Caminhos locais reconhecidos, não cargas de pacotes. Os arquivos locais são analisados dentro da cobertura registrada.</p>` : ''}`;
   const symbols = Array.isArray(analysis.symbols) ? analysis.symbols.filter(symbol => typeof symbol === "string") : [];
   const method = typeof analysis.language === "string" && Number.isInteger(analysis.files_scanned)
     ? `Análise estática de ${e(analysis.language)} em ${count(analysis.files_scanned)} ${analysis.files_scanned === 1 ? "arquivo" : "arquivos"}, ${symbols.length ? `procurando chamadas a <span class="mono">${symbols.map(e).join(", ")}</span>` : "no nível do pacote, porque o aviso não identifica a função vulnerável"}. O código monitorado foi apenas lido, nunca executado.`
@@ -464,7 +465,7 @@ function renderReportFindings() {
   if (!publicMode()) return;
   const counts = reachabilityCounts(scan.findings);
   const scopes = scopeCounts(scan.findings);
-  const filters = { all: ["Todos", scan.findings.length], reachable: ["Alcançáveis", counts.reachable], production: ["Em produção", scopes.production], nonproduction: ["Testes/ferramentas", scopes.test_only + scopes.dev_tooling], unknown: ["Desconhecidos", counts.unknown], unreachable: ["Inalcançáveis", counts.unreachable] };
+  const filters = { all: ["Todos", scan.findings.length], reachable: ["Alcançáveis", counts.reachable], production: ["Em produção", scopes.production], nonproduction: ["Testes/ferramentas", scopes.test_only + scopes.dev_tooling], unknown: ["Desconhecidos", counts.unknown], transitive_unknown: ["Transitivas · import/CLI", scan.findings.filter(isTransitiveUnknown).length], unreachable: ["Inalcançáveis", counts.unreachable] };
   const page = findingPage(scan.findings, state.findingFilter, state.findingPage);
   state.findingPage = page.page;
   section.innerHTML = `<span class="eyebrow">01 / TRIAGEM DOS ACHADOS</span><h3>Priorize com evidências.</h3><p class="secondary">Alcançáveis em produção primeiro. Desconhecido exige revisão — nunca significa seguro.</p><p class="scope-summary">${e(scopeSummary(scopes))}</p>
