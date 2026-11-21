@@ -130,6 +130,26 @@ class PublicByURLTests(unittest.TestCase):
             self.assertEqual(client.post('/api/scans/'+scan_id+'/retry', headers=headers).status_code, 202)
             self.assertEqual(client.get('/api/scans/'+scan_id, headers=headers).json()['progress']['stage'], 'queued')
 
+    def test_sync_isolates_missing_and_network_failures(self):
+        headers = {'Authorization': 'Bearer '+'t'*32}
+        with tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:
+            for name in ('a/missing', 'a/healthy', 'a/timeout'):
+                self.assertEqual(client.post('/api/public/repositories', json={'url': name}, headers=headers).status_code, 200)
+            def changed_refs(name):
+                if name == 'a/missing':
+                    raise PublicError('private_or_missing', 'Unavailable', 404)
+                if name == 'a/timeout':
+                    raise PublicError('network', 'Unavailable', 503)
+                return {'main': 'a'*40, 'release': 'b'*40}, 'main'
+            with patch.object(client.app.state.worker.github, '_refs', side_effect=changed_refs):
+                response = client.post('/api/installations/sync', headers=headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            repos = client.get('/api/installations/9003/repositories', headers=headers).json()['items']
+            self.assertEqual({r['full_name'] for r in repos}, {'a/healthy', 'a/timeout'})
+            healthy = next(r for r in repos if r['full_name'] == 'a/healthy')
+            branches = client.get(f"/api/installations/9003/repositories/{healthy['id']}/branches", headers=headers).json()['items']
+            self.assertEqual({b['name'] for b in branches}, {'main', 'release'})
+
     def test_rate_cap_invalid_branch_and_errors(self):
         headers = {'Authorization': 'Bearer '+'t'*32}
         with tempfile.TemporaryDirectory() as directory, TestClient(self.app(directory)) as client:

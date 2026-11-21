@@ -1,9 +1,9 @@
 import threading
 import time
 
-from sca_reachability.server.errors import PublicError
+from sca_reachability.server.errors import PublicError, ScanError
 from sca_reachability.server.public_github import normalize_repository
-from sca_reachability.server.sync import _apply, sync_installations
+from sca_reachability.server.sync import _apply, _read_installations
 
 
 MAX_REPOSITORIES = 25
@@ -54,4 +54,19 @@ class PublicRepositories:
         with self.lock:
             if len(self.github.repositories) > MAX_REPOSITORIES:
                 raise PublicError('repository_cap', 'Limite de 25 repositórios atingido.', 409)
-            return sync_installations(self.database, self.settings, self.github, github_configured=True)
+            previous = {}
+            with self.database.connection() as connection:
+                for row in connection.execute('SELECT * FROM repositories WHERE installation_id = 9003 AND active = 1'):
+                    branches = [b['name'] for b in connection.execute('SELECT name FROM branches WHERE installation_id = 9003 AND repository_id = ?', (row['id'],))]
+                    previous[row['id']] = dict(id=row['id'], full_name=row['full_name'], default_branch=row['default_branch'], branches=branches)
+            records = []
+            for repo_id, name in self.github.repositories.items():
+                try:
+                    branches, default = self.github._refs(name)
+                except ScanError as error:
+                    if getattr(error, 'code', None) != 'private_or_missing' and repo_id in previous:
+                        records.append(previous[repo_id])
+                    continue
+                records.append(dict(id=repo_id, full_name=name, default_branch=default, branches=sorted(branches)))
+            _apply(self.database, self.settings, [dict(id=9003, account='Repositórios públicos', status='active', repositories=records)])
+            return _read_installations(self.database, self.settings)
