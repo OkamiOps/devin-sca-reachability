@@ -473,14 +473,14 @@ test("polling renders overview and activity even when the main content owns focu
   }
 });
 
-function branchPollHarness() {
+function branchPollHarness({ malformedScans = false } = {}) {
   const branches = [{ name: "main", selected: true }, { name: "release", selected: true }, { name: "draft", selected: false }];
   const scans = [{ id: "fresh-scan", repository: "demo/repo", branch: "main", status: "completed", finding_count: 1 }];
   const app = harness(path => {
     if (path === "/api/installations") return { body: { items: [{ id: 9001, account: "demo", status: "active" }] } };
     if (path === "/api/installations/9001/repositories") return { body: { items: [{ id: 9002, full_name: "demo/repo", default_branch: "main" }] } };
     if (path.endsWith("/branches")) return { body: { items: branches } };
-    if (path.startsWith("/api/scans?")) return { body: { items: scans } };
+    if (path.startsWith("/api/scans?")) return { body: malformedScans ? { items: { invalid: true } } : { items: scans } };
     if (path === "/api/deliveries") return { body: { items: [] } };
     return { body: {} };
   });
@@ -507,6 +507,18 @@ test("clean branch polling consumes the loaded scope without treating it as a sc
   assert.equal(app.state.connectionNotice, false);
   assert.match(app.nodes.get("#main").innerHTML, /option value="release" selected/);
   assert.ok(app.calls.some(call => call.path === "/api/installations/9001/repositories/9002/branches"));
+  assert.ok(app.calls.some(call => call.path.startsWith("/api/scans?")));
+});
+
+test("malformed scan-list polling shows the invalid-list alert and retains saved branches", async () => {
+  const { app, branches } = branchPollHarness({ malformedScans: true });
+  app.nodes.set("#notification", { hidden: true, textContent: "", classList: { toggle() {} }, setAttribute() {} });
+  await app.refresh({ full: false, silent: true });
+  assert.equal(app.nodes.get("#notification").hidden, false);
+  assert.match(app.nodes.get("#notification").textContent, /lista inválida/);
+  assert.equal(app.state.branches, branches);
+  assert.deepEqual([...app.state.selected], ["main", "release"]);
+  assert.deepEqual(app.state.scans, [{ id: "old-scan" }]);
   assert.ok(app.calls.some(call => call.path.startsWith("/api/scans?")));
 });
 
