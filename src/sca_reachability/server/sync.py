@@ -185,9 +185,10 @@ def _apply(database: Database, settings: Settings, installations: list[dict]) ->
                         """
                         INSERT OR IGNORE INTO branches(
                             installation_id, repository_id, name, selected, updated_at
-                        ) VALUES (?, ?, ?, 0, ?)
+                        ) VALUES (?, ?, ?, ?, ?)
                         """,
-                        (installation_id, repository_id, branch, now),
+                        (installation_id, repository_id, branch,
+                         int(settings.mode == 'public' and branch == repository['default_branch']), now),
                     )
                     connection.execute(
                         """

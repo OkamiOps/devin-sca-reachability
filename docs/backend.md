@@ -40,6 +40,23 @@ Use HTTPS com proxy confiável em live. Configure SCA_PUBLIC_ORIGIN com a origem
 
 ## Sessões e API
 
+### Repositórios públicos sem GitHub App
+
+```sh
+export SCA_MODE=public
+export SCA_PUBLIC_REPOSITORIES='OWASP/NodeGoat'
+export SCA_DASHBOARD_TOKEN='<token-aleatorio-com-pelo-menos-32-caracteres>'
+export SCA_PUBLIC_ORIGIN='http://127.0.0.1:8010'
+export SCA_DATABASE_PATH='./public.sqlite3'
+.venv/bin/sca-reachability-serve --port 8010
+```
+
+Após login, sincronize instalações e dispare a análise da branch padrão (selecionada inicialmente). A instalação sintética 9003, “Repositórios públicos”, contém somente os nomes configurados. `SCA_PUBLIC_REPOSITORIES` aceita até dez entradas estritas `owner/name`; vazio deixa GitHub não configurado. IDs sintéticos de repositório são estáveis. O token segue a regra live; nenhuma credencial GitHub é necessária. IA permanece desabilitada neste modo. `/api/meta` informa `public` e configuração real; os scans usam source `github` por compatibilidade com SQLite. Webhooks e `/api/demo/push` retornam 404. A opção de origens loopback continua exclusiva de demo.
+
+Não há chamadas a api.github.com: branches, HEAD simbólico e SHA vêm do anúncio smart HTTP de refs; o snapshot vem de codeload no SHA exato. Download máximo de 32 MiB comprimidos; tar descomprimido (inclusive headers) de até 64 MiB e 30.000 entradas. Tudo permanece em memória: nenhum arquivo monitorado é gravado, executado, instalado ou importado. Apenas um commit fica no cache; blobs recebem SHA Git real. Symlinks/hardlinks não são seguidos e viram entradas 120000, sinalizadas como lacuna pelo pipeline. Caminhos inseguros, arquivos especiais, limites excedidos e snapshots inválidos falham explicitamente, nunca geram resultado “seguro”. Redirects HTTPS são aceitos somente para github.com/codeload.github.com, no máximo três saltos. Rede pública pode falhar ou limitar tráfego; não há garantia de disponibilidade. Reachability e evidências seguem o mesmo worker estático; unknown nunca significa seguro e IA não altera classificação.
+
+O cookie public mantém Secure, HttpOnly, SameSite=strict e Path=/api, como live. Login e envio do cookie Secure foram verificados no Chrome via `http://127.0.0.1:8010`; não foi necessário remover Secure. Use HTTPS fora do ambiente local.
+
 `GET /api/meta` é público e revela somente modo e booleanos de configuração. Login `POST /api/session` recebe `{"token":"..."}`, requer Origin da própria origem e `X-SCA-Request: 1`, responde 200 `{"authenticated":true}`. O cookie opaco é HttpOnly, SameSite=strict, expira em oito horas e só seu SHA-256 é persistido. Logout `DELETE /api/session` responde 204 e revoga o hash. Todas as demais APIs, exceto webhook, exigem bearer token ou sessão. Mutações por cookie exigem o mesmo header e validação de Origin; bearer não substitui a allowlist.
 
 Principais rotas (listas usam `{"items":[...]}`):
