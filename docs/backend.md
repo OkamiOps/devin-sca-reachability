@@ -1,5 +1,25 @@
 # Backend de monitoramento de branches
 
+## Repositório público por URL
+
+`SCA_MODE=public` inicia sem lista de repositórios. `SCA_PUBLIC_REPOSITORIES` é apenas uma lista opcional de até dez presets; a sincronização também preserva os repositórios adicionados pelo operador. O dashboard oferece URL → verificar → escolher branch → analisar → acompanhar etapas → abrir relatório. A seleção de outra branch não exige configurar webhooks ou instalar um GitHub App. O token de acesso é somente o token do operador, nunca uma credencial GitHub.
+
+`POST /api/public/repositories`, autenticado e protegido pelas regras existentes de Origin/CSRF, recebe `{ "url": "https://github.com/owner/repo" }`. Aceita também owner/repo, sufixo .git e /tree/branch (inclusive nomes com barras, validados contra os refs reais). Rejeita outros hosts, HTTP, credenciais, portas, query/fragment, caminhos de arquivos e branches inexistentes. Consulta smart HTTP, sem api.github.com, e retorna installation_id, repository, branches, default_branch e selected_branch. O catálogo persistido é restaurado no adaptador ao reiniciar. O limite de 25 conta a união dos repositórios armazenados e dos presets configurados, sem duplicações, pois presets reservam vagas mesmo antes da sincronização; novos repositórios são rejeitados ao atingir o limite, sem apagar histórico ou análises em andamento, e verificações são limitadas a oito por sessão por minuto (Bearer compartilha o orçamento do operador).
+
+`POST /api/public/repositories/{id}/scan` recebe `{ "branch": "main" }`, seleciona a branch verificada e usa a fila existente, com um worker global. O SHA completo é resolvido novamente ao enfileirar e o snapshot corresponde àquele commit. Nenhum código analisado é instalado, importado, executado ou gravado em disco.
+
+`GET /api/scans/{id}` inclui progress (stage, completed, total, updated_at) e error_code. Etapas: fetching_snapshot, inventory, osv, reachability, persisting e completed/failed; queued representa a espera na fila. Contadores são de unidades da etapa quando disponíveis, não porcentagens estimadas nem prova de exploração. A UI consulta o progresso e oferece o relatório real apenas após conclusão. Erros têm mensagens e ações de recuperação; nunca são apresentados como relatórios vazios seguros.
+
+Códigos estáveis: invalid_url, private_or_missing, network, too_large, unsupported_no_manifests, rate_limit e repository_cap. Sem manifesto suportado com versões exatas, a análise falha explicitamente. Os formatos atuais continuam package-lock.json v2/v3 e requirements.txt com pins exatos; não se infere suporte a Poetry/Pipfile. Content-Length acima do limite interrompe antes da leitura; sem ele, o stream é abortado ao exceder o orçamento. Limites do snapshot: 32 MiB transferidos, 64 MiB descompactados e 30.000 entradas; refs têm orçamento separado de 4 MiB. Há duas tabelas aditivas e idempotentes: scan_progress e public_registration_attempts. Sem mudança na classificação de alcance, nos modos demo/live ou na política de fontes npm.
+
+Exemplo local, sem presets:
+
+~~~sh
+SCA_MODE=public SCA_DASHBOARD_TOKEN='<token-do-operador-com-pelo-menos-32-caracteres>' \
+SCA_PUBLIC_ORIGIN=http://127.0.0.1:8012 SCA_DATABASE_PATH=./public-byurl.sqlite3 \
+  .venv/bin/python -m sca_reachability.server.cli --port 8012
+~~~
+
 Piloto defensivo para um operador responsável pelas instalações explicitamente autorizadas. Não é autenticação SaaS multi-tenant. O CLI offline continua independente de FastAPI e de rede.
 
 ## Instalação e demonstração
@@ -44,6 +64,7 @@ Use HTTPS com proxy confiável em live. Configure SCA_PUBLIC_ORIGIN com a origem
 
 ```sh
 export SCA_MODE=public
+# Opcional: presets para a sincronização; pode ser omitido ou vazio.
 export SCA_PUBLIC_REPOSITORIES='OWASP/NodeGoat'
 export SCA_DASHBOARD_TOKEN='<token-aleatorio-com-pelo-menos-32-caracteres>'
 export SCA_PUBLIC_ORIGIN='http://127.0.0.1:8010'
@@ -51,7 +72,7 @@ export SCA_DATABASE_PATH='./public.sqlite3'
 .venv/bin/sca-reachability-serve --port 8010
 ```
 
-Após login, sincronize instalações e dispare a análise da branch padrão (selecionada inicialmente). A instalação sintética 9003, “Repositórios públicos”, contém somente os nomes configurados. `SCA_PUBLIC_REPOSITORIES` aceita até dez entradas estritas `owner/name`; vazio deixa GitHub não configurado. IDs sintéticos de repositório são estáveis. O token segue a regra live; nenhuma credencial GitHub é necessária. IA permanece desabilitada neste modo. `/api/meta` informa `public` e configuração real; os scans usam source `github` por compatibilidade com SQLite. Webhooks e `/api/demo/push` retornam 404. A opção de origens loopback continua exclusiva de demo.
+Após login, cole uma URL pública no cartão, verifique o repositório, escolha a branch e inicie a análise. Para carregar presets, sincronize instalações. A instalação sintética 9003, “Repositórios públicos”, contém os presets sincronizados e os repositórios registrados por URL. `SCA_PUBLIC_REPOSITORIES` aceita até dez entradas estritas `owner/name`, mas é opcional: omitido ou vazio mantém GitHub público configurado e o registro por URL disponível. IDs sintéticos de repositório são estáveis. O token segue a regra live; nenhuma credencial GitHub é necessária. IA permanece desabilitada neste modo. `/api/meta` informa `public` e configuração real; os scans usam source `github` por compatibilidade com SQLite. Webhooks e `/api/demo/push` retornam 404. A opção de origens loopback continua exclusiva de demo.
 
 Não há chamadas a api.github.com: branches, HEAD simbólico e SHA vêm do anúncio smart HTTP de refs; o snapshot vem de codeload no SHA exato. Download máximo de 32 MiB comprimidos; tar descomprimido (inclusive headers) de até 64 MiB e 30.000 entradas. Tudo permanece em memória: nenhum arquivo monitorado é gravado, executado, instalado ou importado. Apenas um commit fica no cache; blobs recebem SHA Git real. Symlinks/hardlinks não são seguidos e viram entradas 120000, sinalizadas como lacuna pelo pipeline. Caminhos inseguros, arquivos especiais, limites excedidos e snapshots inválidos falham explicitamente, nunca geram resultado “seguro”. Redirects HTTPS são aceitos somente para github.com/codeload.github.com, no máximo três saltos. Rede pública pode falhar ou limitar tráfego; não há garantia de disponibilidade. Reachability e evidências seguem o mesmo worker estático; unknown nunca significa seguro e IA não altera classificação.
 

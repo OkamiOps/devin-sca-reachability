@@ -11,7 +11,7 @@ DEMO_REPOSITORY_ID = 9002
 
 def allowed_installation_ids(settings: Settings) -> frozenset[int]:
     if settings.mode == "public":
-        return frozenset({9003}) if settings.public_repositories else frozenset()
+        return frozenset({9003})
     if settings.mode == "demo":
         return frozenset({DEMO_INSTALLATION_ID})
     return settings.allowed_installation_ids

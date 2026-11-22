@@ -11,3 +11,14 @@ class RetryableError(Exception):
 
 class ScanError(Exception):
     """A permanent analysis error; the scan must not be presented as complete."""
+
+
+class PublicError(ScanError):
+    def __init__(self, code: str, message: str, status: int = 400):
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
+
+class PublicRetryableError(PublicError, RetryableError):
+    """A public API error that retains the worker's bounded retry behavior."""

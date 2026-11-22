@@ -3,16 +3,46 @@ import gzip
 import io
 import tarfile
 import threading
+import re
+from urllib.parse import urlsplit, unquote
 
 import httpx
 
-from sca_reachability.server.errors import RetryableError, ScanError
+from sca_reachability.server.errors import PublicError, PublicRetryableError, ScanError
 from sca_reachability.server.github import SHA_RE
 
 
 MAX_COMPRESSED = 32 * 1024 * 1024
 MAX_UNCOMPRESSED = 64 * 1024 * 1024
 MAX_ENTRIES = 30000
+
+
+def normalize_repository(value):
+    if not isinstance(value, str) or len(value) > 600:
+        raise PublicError('invalid_url', 'Informe uma URL de repositório público no GitHub.')
+    value = value.strip()
+    if '://' in value:
+        try:
+            parsed = urlsplit(value)
+        except ValueError as error:
+            raise PublicError('invalid_url', 'URL GitHub inválida.') from error
+        if (parsed.scheme != 'https' or parsed.netloc.lower() != 'github.com'
+                or parsed.query or parsed.fragment):
+            raise PublicError('invalid_url', 'Use apenas https://github.com/owner/repo.')
+        value = parsed.path.removeprefix('/')
+    parts = value.rstrip('/').split('/')
+    branch = None
+    if len(parts) >= 4 and parts[2] == 'tree':
+        branch = unquote('/'.join(parts[3:]))
+        if not branch or len(branch) > 255 or any(ord(c) < 33 for c in branch) or any(p in {'.', '..', ''} for p in branch.split('/')) or any(c in branch for c in '\\?*[:^~'):
+            raise PublicError('invalid_url', 'Branch inválida na URL.')
+        parts = parts[:2]
+    if len(parts) != 2:
+        raise PublicError('invalid_url', 'Use owner/repo ou uma URL de repositório, sem caminhos de arquivos.')
+    name = '/'.join(parts).removesuffix('.git').lower()
+    if not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}/[A-Za-z0-9_.-]{1,100}', name) or name.split('/')[1] in {'.', '..'}:
+        raise PublicError('invalid_url', 'Nome de repositório GitHub inválido.')
+    return name, branch
 
 
 def parse_refs(data: bytes) -> tuple[dict[str, str], str]:
@@ -60,15 +90,15 @@ def parse_tarball(data: bytes, *, max_compressed=None, max_uncompressed=None, ma
     seen = set()
     try:
         if len(data) > max_compressed:
-            raise ScanError('Public snapshot exceeds the compressed size limit.')
+            raise PublicError('too_large', 'Repositório grande demais: limite de download excedido.')
         with gzip.GzipFile(fileobj=io.BytesIO(data)) as compressed:
             unpacked = compressed.read(max_uncompressed + 1)
         if len(unpacked) > max_uncompressed:
-            raise ScanError('Public snapshot exceeds the uncompressed size limit.')
+            raise PublicError('too_large', 'Repositório grande demais: limite descompactado excedido.')
         with tarfile.open(fileobj=io.BytesIO(unpacked), mode='r|') as archive:
             for index, member in enumerate(archive):
                 if index >= max_entries:
-                    raise ScanError('Public snapshot has too many entries.')
+                    raise PublicError('too_large', 'Repositório grande demais: limite de arquivos excedido.')
                 parts = member.name.rstrip('/').split('/')
                 if any(p in {'', '.', '..'} for p in parts) or member.name.startswith('/') or '\\' in member.name or '\0' in member.name:
                     raise ScanError('Public snapshot contains an unsafe path.')
@@ -85,7 +115,7 @@ def parse_tarball(data: bytes, *, max_compressed=None, max_uncompressed=None, ma
                 seen.add(path)
                 total += member.size
                 if total > max_uncompressed:
-                    raise ScanError('Public snapshot exceeds the uncompressed size limit.')
+                    raise PublicError('too_large', 'Repositório grande demais: limite descompactado excedido.')
                 if member.issym() or member.islnk():
                     content = member.linkname.encode('utf-8')
                     mode = '120000'
@@ -142,22 +172,32 @@ class PublicGitHubAdapter:
                         url = str(target)
                         continue
                     if response.status_code == 429 or response.status_code >= 500:
-                        raise RetryableError('Public GitHub is temporarily unavailable.')
+                        raise PublicRetryableError('network', 'GitHub temporariamente indisponível. Tente novamente.', 503)
+                    if response.status_code in {401, 404}:
+                        raise PublicError('private_or_missing', 'Repositório privado ou inexistente', 404)
                     if response.status_code != 200:
-                        raise ScanError(f'Public GitHub returned HTTP {response.status_code}.')
+                        raise PublicError('network', 'GitHub não respondeu à consulta. Tente novamente.', 503)
                     chunks, size = [], 0
+                    length = response.headers.get('content-length', '')
+                    if length.isdigit() and int(length) > limit:
+                        raise PublicError('too_large', 'Repositório grande demais: limite de download excedido.')
                     for chunk in response.iter_bytes():
                         size += len(chunk)
                         if size > limit:
-                            raise ScanError('Public GitHub response exceeds the size limit.')
+                            raise PublicError('too_large', 'Repositório grande demais: limite de download excedido.')
                         chunks.append(chunk)
                     return b''.join(chunks)
             raise ScanError('Too many public GitHub redirects.')
         except httpx.RequestError as error:
-            raise RetryableError('Public GitHub request failed.') from error
+            raise PublicRetryableError('network', 'Não foi possível conectar ao GitHub. Tente novamente.', 503) from error
 
     def _refs(self, repository):
-        return parse_refs(self._download(f'https://github.com/{repository}.git/info/refs?service=git-upload-pack', 4 * 1024 * 1024))
+        try:
+            return parse_refs(self._download(f'https://github.com/{repository}.git/info/refs?service=git-upload-pack', 4 * 1024 * 1024))
+        except PublicError:
+            raise
+        except ScanError as error:
+            raise PublicError('network', 'GitHub retornou referências incompletas. Tente novamente.', 503) from error
 
     def list_installations(self):
         return [dict(id=self.installation_id, account='Repositórios públicos', status='active')]

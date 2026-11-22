@@ -43,7 +43,7 @@ function harness(responder) {
       return new Response(JSON.stringify(result.body ?? {}), { status: result.status ?? 200, headers: { "Content-Type": "application/json" } });
     },
   };
-  vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped, overview, activity, branches, scanTable, branchRows, simulationControls, renderLogin, openDetail, focusMain, matchingScans, resultsList, refresh, selectFiltered, findingMarkup, advisoryLink, manifestLink, findingInstructions, copyInstructions, selectionSummary, renderView };`, sandbox);
+  vm.runInNewContext(`${appSource}\nglobalThis.testApp = { state, api, boot, saveBranches, loadScoped, overview, activity, branches, scanTable, branchRows, simulationControls, renderLogin, openDetail, focusMain, matchingScans, resultsList, refresh, selectFiltered, findingMarkup, advisoryLink, manifestLink, findingInstructions, copyInstructions, selectionSummary, renderView, publicRepositoryCard, verifyPublicRepository, analyzePublicRepository, pollPublicRepository, endSession };`, sandbox);
   return { ...sandbox.testApp, nodes, calls, events, windowEvents, timers, clipboard, document: sandbox.document, window: sandbox.window,
     async tick(delay) {
       const entry = [...timers].find(([, timer]) => timer.delay === delay);
@@ -60,6 +60,86 @@ test("demo connection is neutral even with legacy configured metadata; live stay
   assert.doesNotMatch(app.overview(), />Configurado</);
   app.state.meta.mode = "live";
   assert.match(app.overview(), /badge live">Configurado/);
+});
+
+test("public repository workflow validates, selects, polls and offers the real report", async () => {
+  const registration = { installation_id: 9003, repository: { id: 5, full_name: "a/b" }, branches: ["main", "feature/x"], default_branch: "main", selected_branch: "main" };
+  let polls = 0;
+  const app = harness(path => {
+    if (path === "/api/public/repositories") return { body: registration };
+    if (path === "/api/public/repositories/5/scan") return { status: 202, body: { scan_id: "real-scan" } };
+    if (path === "/api/scans/real-scan") return { body: ++polls === 1 ? { id: "real-scan", status: "running", progress: { stage: "osv", completed: 0, total: 1 } } : { id: "real-scan", status: "completed", finding_count: 0 } };
+    if (path === "/api/installations") return { body: { items: [{ id: 9003, status: "active" }] } };
+    if (path.endsWith("/repositories")) return { body: { items: [{ id: 5, full_name: "a/b" }] } };
+    if (path.endsWith("/branches")) return { body: { items: [{ name: "main", selected: true }] } };
+    return { body: { items: [] } };
+  });
+  app.state.meta = { mode: "public" }; app.state.authenticated = true;
+  app.state.publicFlow.url = "https://github.com/a/b";
+  await app.verifyPublicRepository();
+  assert.equal(app.state.publicFlow.phase, "ready");
+  assert.match(app.publicRepositoryCard(), /REPOSITÓRIO VERIFICADO/);
+  assert.match(app.publicRepositoryCard(), /value="main" selected/);
+  await app.analyzePublicRepository();
+  assert.equal(app.state.publicFlow.phase, "scanning");
+  assert.match(app.publicRepositoryCard(), /aria-current="step"/);
+  await app.tick(1000);
+  assert.equal(app.state.publicFlow.phase, "completed");
+  assert.match(app.publicRepositoryCard(), /Abrir relatório real/);
+  assert.match(app.publicRepositoryCard(), /Ausência de achados não significa segurança/);
+  app.events.get("input")({ target: { id: "public-repository-url", value: "other/repository" } });
+  assert.equal(app.state.publicFlow.phase, "idle");
+  assert.equal(app.state.publicFlow.scan, null);
+  assert.equal(app.state.publicFlow.registration, null);
+  app.state.meta.mode = "demo"; assert.equal(app.publicRepositoryCard(), "");
+  app.state.meta.mode = "live"; assert.equal(app.publicRepositoryCard(), "");
+});
+
+test("public errors are specific, escaped, recoverable and local invalid input makes no request", async () => {
+  const app = harness(() => ({ status: 404, body: { code: "private_or_missing", detail: "<script>secret provider diagnostic</script>" } }));
+  app.state.meta = { mode: "public" }; app.state.authenticated = true;
+  app.state.publicFlow.url = "not a URL";
+  await app.verifyPublicRepository();
+  assert.equal(app.calls.length, 0);
+  assert.equal(app.state.publicFlow.error, "invalid_url");
+  app.state.publicFlow.url = "a/b";
+  await app.verifyPublicRepository();
+  assert.equal(app.state.publicFlow.error, "private_or_missing");
+  assert.match(app.publicRepositoryCard(), /Repositório privado ou inexistente/);
+  assert.match(app.publicRepositoryCard(), /Escolher outro repositório/);
+  assert.doesNotMatch(app.publicRepositoryCard(), /secret provider|<script>/);
+  app.state.publicFlow.url = '\"><img src=x onerror=x>';
+  assert.doesNotMatch(app.publicRepositoryCard(), /<img/);
+  app.endSession();
+  assert.equal(app.state.publicFlow.url, "");
+  assert.equal(app.state.publicFlow.scan, null);
+});
+
+test("network recovery resumes a running scan instead of retrying it as failed", async () => {
+  const app = harness(path => path === "/api/scans/in-progress" ? { body: { id: "in-progress", status: "running", progress: { stage: "inventory" } } } : {});
+  app.state.meta = { mode: "public" }; app.state.authenticated = true;
+  app.state.publicFlow.scan = { id: "in-progress", status: "running" };
+  await app.analyzePublicRepository(true);
+  assert.equal(app.state.publicFlow.phase, "scanning");
+  assert.ok(app.calls.every(call => !call.path.endsWith("/retry")));
+});
+
+test("public verification cannot switch scope with an unsaved branch draft, including during the request", async () => {
+  let resolve;
+  const app = harness(() => new Promise(r => { resolve = r; }));
+  app.state.authenticated = true; app.state.installation = 9003; app.state.repository = 1;
+  app.state.branches = [{ name: "main", selected: true }]; app.state.selected = new Set(["release"]);
+  app.state.publicFlow.url = "a/b";
+  await app.verifyPublicRepository();
+  assert.equal(app.calls.length, 0); assert.equal(app.state.repository, 1);
+  assert.match(app.nodes.get("#notification").textContent, /Salve ou descarte/);
+  app.state.selected = new Set(["main"]);
+  const verification = app.verifyPublicRepository();
+  app.state.selected = new Set(["release"]);
+  resolve({ body: { installation_id: 9003, repository: { id: 2 } } });
+  await verification;
+  assert.equal(app.state.repository, 1);
+  assert.deepEqual([...app.state.selected], ["release"]);
 });
 
 test("results search finds advisory IDs and package names, including clean inventories", () => {

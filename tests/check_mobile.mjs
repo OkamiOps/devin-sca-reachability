@@ -45,8 +45,16 @@ try {
   assert.equal(await evaluate(`fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json','X-SCA-Request':'1'},body:JSON.stringify({token:${JSON.stringify(token)}})}).then(r=>r.status)`), 200);
   await call("Page.reload");
   await until("document.querySelector('#navigation')?.hidden === false");
-  const scanId = await evaluate("fetch('/api/scans').then(r=>r.json()).then(r=>r.items.find(s=>s.status==='completed')?.id)");
-  assert.ok(scanId, "A completed scan is required");
+  const scan = await evaluate("fetch('/api/scans').then(r=>r.json()).then(r=>r.items.find(s=>s.status==='completed'))");
+  assert.ok(scan?.id, "A completed scan is required");
+  const scanId = scan.id;
+  const scope = await evaluate(`(async()=>{const installations=(await fetch('/api/installations').then(r=>r.json())).items;for(const installation of installations){const repositories=(await fetch('/api/installations/'+installation.id+'/repositories').then(r=>r.json())).items;const repository=repositories.find(r=>r.full_name===${JSON.stringify(scan.repository)});if(repository)return {installationId:installation.id,repositoryId:repository.id};}})()`);
+  assert.ok(scope, "The completed scan's repository must remain available");
+  await until(`!!document.querySelector('#installation-select option[value="${scope.installationId}"]')`);
+  await evaluate(`(()=>{const n=document.querySelector('#installation-select');n.value=${JSON.stringify(String(scope.installationId))};n.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await until(`!!document.querySelector('#repository-select option[value="${scope.repositoryId}"]')`);
+  await evaluate(`(()=>{const n=document.querySelector('#repository-select');n.value=${JSON.stringify(String(scope.repositoryId))};n.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await until(`document.querySelector('#main').getAttribute('aria-busy')==='false' && document.querySelector('#repository-select')?.value===${JSON.stringify(String(scope.repositoryId))}`);
   async function screenshot(name) {
     if (!process.env.SCA_SCREEN_DIR) return;
     const { data } = await call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });

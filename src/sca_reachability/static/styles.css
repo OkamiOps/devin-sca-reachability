@@ -1,3 +1,38 @@
+.public-repository-card { padding: 30px; margin: 28px 0; border-top: 3px solid var(--accent, #c45424); }
+.public-card-intro, .public-branch-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.public-card-intro h2 { margin: 10px 0; font-size: clamp(23px, 3vw, 32px); }
+.public-card-intro p { color: var(--text-muted); max-width: 660px; }
+.public-readonly { color: var(--accent, #a84319); white-space: nowrap; font-size: 12px; }
+.public-repository-card form { margin-top: 24px; }
+.public-repository-card label { display: block; font-weight: 600; font-size: 13px; }
+.public-url-row { display: flex; align-items: stretch; gap: 12px; margin: 9px 0; }
+.public-url-row input { flex: 1; min-width: 0; width: 100%; }
+.public-url-row button { flex-shrink: 0; }
+.public-repository-card input, .public-repository-card select, .public-repository-card button { min-width: 44px; min-height: 46px; }
+.public-branch-row { border-top: 1px solid var(--border, #deded8); padding-top: 23px; margin-top: 23px; }
+.public-branch-row > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.public-branch-row .field { flex: 1; min-width: 0; max-width: 350px; }
+.public-branch-row select { width: 100%; min-width: 0; }
+.public-flow-error { padding: 20px; margin: 20px 0 0; border: 1px solid #cd8066; border-radius: 12px; background: rgba(190, 70, 35, .06); overflow-wrap: anywhere; }
+.public-flow-error p { max-width: 760px; }
+.public-progress { margin-top: 26px; padding-top: 24px; border-top: 1px solid var(--border, #deded8); }
+.public-stage-list { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 15px; padding: 0; margin: 26px 0; list-style: none; }
+.public-stage-list li { display: flex; flex-direction: column; gap: 14px; min-width: 0; font-size: 12px; color: var(--text-muted); }
+.public-stage-list li > span { display: flex; width: 32px; height: 32px; align-items: center; justify-content: center; border: 1px solid var(--border, #ddd); border-radius: 50%; }
+.public-stage-list .active { color: var(--accent, #a84319); }
+.public-stage-list .active > span { border-color: currentColor; background: rgba(190, 70, 35, .08); }
+.public-stage-list .done { color: var(--text); }
+.public-stage-list .done > span { background: rgba(50, 90, 65, .07); }
+@media (max-width: 640px) {
+  .public-repository-card { padding: 22px 18px; }
+  .public-card-intro, .public-url-row, .public-branch-row { flex-direction: column; align-items: stretch; gap: 14px; }
+  .public-readonly { align-self: flex-start; }
+  .public-branch-row .field { max-width: none; }
+  .public-stage-list { grid-template-columns: 1fr; gap: 15px; }
+  .public-stage-list li { flex-direction: row; align-items: center; font-size: 13px; }
+  .public-stage-list li > span { flex-shrink: 0; }
+  .public-progress .section-heading { flex-wrap: wrap; gap: 12px; }
+}
 /* Product workspace: clear evidence, a compact workbench, and persistent navigation. */
 .finding-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 12px; }
 .finding-filters button { min-height: 44px; min-width: 0; border-radius: 9px; white-space: normal; }

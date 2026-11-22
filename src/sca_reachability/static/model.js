@@ -1,4 +1,32 @@
 // Shared, side-effect-free display rules. Never infer reachability from AI prose.
+export function validPublicRepository(value) {
+  if (typeof value !== "string" || value.length > 600) return false;
+  const match = value.trim().match(/^(?:https:\/\/github\.com\/)?[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\/([A-Za-z0-9_.-]{1,100})(?:\/tree\/[^\s?#]+)?\/?$/);
+  return !!match && !["", ".", ".."].includes(match[1].replace(/\.git$/, ""));
+}
+
+export function publicErrorCopy(code) {
+  const messages = { invalid_url: "URL inválida. Use https://github.com/owner/repo, sem caminhos de arquivos.",
+    private_or_missing: "Repositório privado ou inexistente. Confira o endereço ou escolha outro repositório público.",
+    too_large: "Repositório grande demais para esta análise. Escolha um projeto menor; nenhum relatório de segurança foi produzido.",
+    unsupported_no_manifests: "Nenhum manifesto suportado com versões exatas. Use package-lock.json v2/v3 ou requirements.txt com pins exatos.",
+    network: "Não foi possível concluir a conexão. Tente novamente; isso não é um resultado de segurança.",
+    rate_limit: "Muitas verificações. Aguarde um minuto antes de tentar novamente.",
+    repository_cap: "Limite de 25 repositórios atingido. Escolha um repositório da lista existente.",
+    branch_limit: "Limite de 20 branches monitoradas. Desmarque uma branch em Monitoramento antes de analisar outra.",
+  };
+  return Object.hasOwn(messages, code) ? messages[code] : "A análise não pôde ser concluída. Tente novamente ou escolha outro repositório. Nenhum resultado de segurança foi produzido.";
+}
+
+export function publicProgress(scan) {
+  const stages = [["fetching_snapshot", "Snapshot do GitHub"], ["inventory", "Dependências exatas"],
+    ["osv", "Avisos do OSV"], ["reachability", "Alcance estático"], ["persisting", "Salvar evidências"]];
+  const stage = scan?.progress?.stage || scan?.status || "queued";
+  const current = scan?.status === "completed" ? stages.length : stages.findIndex(([key]) => key === stage);
+  return stages.map(([key, label], index) => ({ key, label,
+    status: index < current ? "done" : index === current ? "active" : "pending" }));
+}
+
 export function escapeHTML(value) {
   return String(value ?? "").replace(/[&<>"']/g, character => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",

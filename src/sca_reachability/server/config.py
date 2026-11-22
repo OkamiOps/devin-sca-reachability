@@ -106,7 +106,7 @@ class Settings:
     @property
     def github_configured(self) -> bool:
         if self.mode == "public":
-            return bool(self.public_repositories)
+            return True
         if self.mode == "demo":
             return True
         return bool(

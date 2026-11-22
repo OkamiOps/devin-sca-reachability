@@ -5,7 +5,7 @@ import time
 from sca_reachability.explanation import explain_report
 from sca_reachability.server.config import Settings
 from sca_reachability.server.db import Database, iso_now
-from sca_reachability.server.errors import RetryableError, ScanError
+from sca_reachability.server.errors import PublicError, RetryableError, ScanError
 from sca_reachability.server.github import DemoGitHubAdapter, GitHubAdapter
 from sca_reachability.server.manifests import inventory_manifests
 from sca_reachability.server.osv_client import Advisory, OsvAdapter
@@ -77,6 +77,15 @@ class ScanWorker:
                 (now,),
             ).fetchall()
             for job in expired:
+                exhausted = job['attempts'] >= MAX_ATTEMPTS
+                connection.execute(
+                    '''INSERT INTO scan_progress(scan_id, stage, completed, total, error_code, updated_at)
+                    VALUES (?, ?, NULL, NULL, ?, ?)
+                    ON CONFLICT(scan_id) DO UPDATE SET stage=excluded.stage,
+                    completed=NULL, total=NULL, error_code=excluded.error_code, updated_at=excluded.updated_at''',
+                    (job['scan_id'], 'failed' if exhausted else 'queued',
+                     'analysis_failed' if exhausted else None, iso_now()),
+                )
                 if job["attempts"] >= MAX_ATTEMPTS:
                     self._mark_failed(
                         connection,
@@ -146,14 +155,19 @@ class ScanWorker:
         heartbeat.start()
         try:
             inventory, advisories_by_component, demo_sources, reachability = self._analyze(job_data)
+            self._progress(job_data, 'persisting', 0, len(inventory.components))
             self._save_results(
                 job_data, inventory, advisories_by_component, demo_sources, reachability
             )
+            self._progress(job_data, 'completed', len(inventory.components), len(inventory.components))
         except RetryableError:
+            self._progress(job_data, 'failed' if job_data['attempts'] >= MAX_ATTEMPTS else 'queued', code='network' if job_data['attempts'] >= MAX_ATTEMPTS else None)
             self._retry_or_fail(job_data)
         except ScanError as error:
+            self._progress(job_data, 'failed', code=getattr(error, 'code', 'analysis_failed'))
             self._fail(job_data, str(error))
         except Exception:
+            self._progress(job_data, 'failed', code='analysis_failed')
             self._fail(job_data, "Analysis failed due to an internal service error.")
         finally:
             heartbeat_stop.set()
@@ -199,6 +213,7 @@ class ScanWorker:
 
     def _analyze(self, job: dict):
         self._ensure_authorized(job)
+        self._progress(job, 'fetching_snapshot')
         tree, truncated = self.github.get_tree(
             job["installation_id"],
             job["repository_id"],
@@ -208,6 +223,7 @@ class ScanWorker:
         if truncated:
             raise ScanError("GitHub returned a truncated dependency tree; the scan is incomplete.")
         self._ensure_authorized(job)
+        self._progress(job, 'inventory', 0, len(tree))
         demo_sources = []
         capture_demo_sources = (
             self.settings.mode == "demo"
@@ -224,7 +240,11 @@ class ScanWorker:
                 if capture_demo_sources else None
             ),
         )
+        if self.settings.mode == 'public' and not inventory.components:
+            raise PublicError('unsupported_no_manifests', 'Nenhum manifesto suportado com versões exatas foi encontrado. Use package-lock.json v2/v3 ou requirements.txt com pins exatos.')
         self._ensure_authorized(job)
+        self._progress(job, 'inventory', len(tree), len(tree))
+        self._progress(job, 'osv', 0, len(inventory.components))
         if inventory.components:
             advisories = self.osv.query(inventory.components)
         else:
@@ -238,6 +258,8 @@ class ScanWorker:
         ):
             raise ScanError("OSV returned malformed advisory data.")
         self._ensure_authorized(job)
+        self._progress(job, 'osv', len(inventory.components), len(inventory.components))
+        self._progress(job, 'reachability', 0, sum(len(items) for items in advisories))
         coverage = SourceCoverage()
         if any(advisories):
             coverage = collect_sources(tree, lambda blob_sha: self._read_blob(job, blob_sha))
@@ -246,7 +268,15 @@ class ScanWorker:
             with self.npm_sources_factory() as package_sources:
                 reachability = trace_transitives(inventory.components, reachability, coverage, package_sources)
         self._ensure_authorized(job)
+        self._progress(job, 'reachability', sum(len(items) for items in advisories), sum(len(items) for items in advisories))
         return inventory, advisories, demo_sources, reachability
+
+    def _progress(self, job, stage, completed=None, total=None, code=None):
+        with self.database.transaction() as connection:
+            connection.execute('''INSERT INTO scan_progress(scan_id, stage, completed, total, error_code, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(scan_id) DO UPDATE SET stage=excluded.stage,
+                completed=excluded.completed, total=excluded.total, error_code=excluded.error_code, updated_at=excluded.updated_at''',
+                (job['scan_id'], stage, completed, total, code, iso_now()))
 
     def _read_blob(self, job: dict, blob_sha: str) -> bytes:
         self._ensure_authorized(job)
